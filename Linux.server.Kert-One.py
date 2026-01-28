@@ -47,7 +47,9 @@ CORS(app)
 mining_active = False
 miner_thread = None
 miner_address_global = None # Endereço para onde as recompensas de mineração serão enviadas
-
+@app.route('/card') 
+def card_web():
+    return render_template('card.html')
 # --- Funções de Persistência de Peers ---
 def salvar_peers(peers):
     """Salva a lista de peers conhecidos em um arquivo JSON."""
@@ -870,6 +872,7 @@ def new_transaction_api():
                 'transaction_id': transaction['id']}
     return jsonify(response), 201
 
+
 def broadcast_tx_to_peers(tx):
     """Envia uma transação para todos os peers conhecidos."""
     print(f"[Broadcast TX] Enviando transação {tx.get('id')} para {len(known_nodes)} peers.")
@@ -1362,6 +1365,19 @@ def auto_sync_checker(blockchain_instance):
             print(f"[SYNC_CHECKER ERROR] Erro no verificador de sincronização: {e}")
         time.sleep(60) # Verifica a cada 60 segundos
 
+def safe_json_response(resp, peer):
+    try:
+        if resp.status_code != 200:
+            print(f"[NET] {peer} retornou status {resp.status_code}")
+            return None
+        if 'application/json' not in resp.headers.get('Content-Type', ''):
+            print(f"[NET] {peer} não retornou JSON")
+            return None
+        return resp.json()
+    except Exception as e:
+        print(f"[NET] JSON inválido de {peer}: {e}")
+        return None
+
 def comparar_ultimos_blocos(blockchain_instance):
     """Compara o último bloco local com o dos peers e inicia a resolução de conflitos se houver diferença."""
     if blockchain_instance is None or blockchain_instance.last_block() is None:
@@ -1378,8 +1394,9 @@ def comparar_ultimos_blocos(blockchain_instance):
         if peer == meu_url:
             continue
         try:
-            r = requests.get(f"{peer}/sync/check", timeout=5)
-            data = r.json()
+            response = requests.get(f"{node_url}/chain", timeout=10)
+            data = response.json()
+
             peer_index = data.get('index')
             peer_hash = data.get('hash')
 
@@ -1410,7 +1427,7 @@ def comparar_ultimos_blocos(blockchain_instance):
 # --- Execução Principal ---
 def run_server():
     global blockchain, meu_ip, meu_url, port
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 5001))
     
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
