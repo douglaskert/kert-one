@@ -27,17 +27,42 @@ COIN_NAME = "Kert-One"
 COIN_SYMBOL = "KERT"
 PEERS_FILE = 'peers.json'
 WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do cliente - mantido para compatibilidade, mas não usado pela GUI
-
+used_proofs = set()
+MAX_STORED_PROOFS = 5000
+# --- ADICIONE ESTAS LINHAS AQUI ---
+miner_address = None
+is_mining = False
+miner_lock = threading.Lock()
+# ---------------------------------
 # --- NÓS SEMENTES (SEED NODES) ---
 # Importante: Se os nós semente usam HTTPS, seu nó local também deve ser acessível via HTTPS
 # para comunicação bidirecional ideal em um ambiente de produção.
 # Para testes locais, HTTP pode ser suficiente, mas pode haver problemas de conectividade
-# com nós HTTPS públicos que tentam se conectar de volta ao seu nó HTTP.
 SEED_NODES = [
     "https://seend.kert-one.com",
     "https://seend2.kert-one.com",
     "https://seend3.kert-one.com",
 ]
+PROTOCOL_VERSION = "KERT-CORE-1.0"
+
+PROTOCOL_RULES = {
+    "coin_name": COIN_NAME,
+    "symbol": COIN_SYMBOL,
+    "initial_difficulty": DIFFICULTY,
+    "target_block_time": 600,
+
+    # 🔒 ECONOMIA TRAVADA
+    "reward_schedule": {
+        "1-1200": 50.0,
+        "1201-2200": 25.0,
+        "2201-4000": 12.5,
+        "4001-5500": 6.5,
+        "5501-6200": 3.25,
+        "6201-20000": 1.25,
+        "20001-1000000": 0.03
+    }
+}
+
 
 app = Flask(__name__)
 node_id = str(uuid4()).replace('-', '')
@@ -47,7 +72,9 @@ CORS(app)
 mining_active = False
 miner_thread = None
 miner_address_global = None # Endereço para onde as recompensas de mineração serão enviadas
-
+@app.route('/card') 
+def card_web():
+    return render_template('card.html')
 # --- Funções de Persistência de Peers ---
 def salvar_peers(peers):
     """Salva a lista de peers conhecidos em um arquivo JSON."""
@@ -105,6 +132,23 @@ class Blockchain:
         block_string = json.dumps({k: v for k, v in block.items() if k not in ['transactions', 'hash']}, sort_keys=True)
         return hashlib.sha256(block_string.encode()).hexdigest()
 
+    def get_protocol_price(self):
+        difficulty = self._calculate_difficulty_for_index(len(self.chain) + 1)
+        hashes_needed = 16 ** difficulty
+        COST_PER_MILLION_HASHES = 0.02
+
+        block_cost = (hashes_needed / 1_000_000) * COST_PER_MILLION_HASHES
+
+        reward = self._get_mining_reward(len(self.chain) + 1)
+        computed_price = block_cost / reward if reward else 0.0
+
+        MIN_PROTOCOL_PRICE = 500.0
+        final_price = max(computed_price, MIN_PROTOCOL_PRICE)
+
+        return f"{final_price:.2f}"   # ← AGORA É STRING FIXA
+
+
+        
     def is_duplicate_transaction(self, new_tx):
         """Verifica se uma transação já está na fila de transações pendentes ou em um bloco minerado."""
         # Verificar transações pendentes
@@ -614,6 +658,43 @@ def gerar_endereco(public_key_hex):
     except ValueError as e:
         print(f"[ERRO] Falha ao gerar endereço: {e}")
         return None
+        
+@app.route('/coin/value', methods=['GET'])
+def coin_value_api():
+    value = blockchain.get_protocol_price()
+    return jsonify({
+        "coin": COIN_SYMBOL,
+        "protocol_value": value,
+        "unit": "BRL-per-coin"
+    }), 200
+
+
+def calculate_protocol_value():
+    """
+    Calcula o índice de custo computacional da rede.
+    Fórmula:
+        dificuldade do último bloco × número de transações pendentes
+    """
+    try:
+        last_block = blockchain.last_block()
+        if not last_block:
+            return 0.0
+
+        difficulty = last_block.get("difficulty", 1)
+        mempool_size = len(blockchain.current_transactions)
+
+        value = difficulty * mempool_size
+        return float(f"{value:.4f}")
+    except:
+        return 0.0
+
+@app.route('/protocol/value', methods=['GET'])
+def protocol_value_api():
+    return jsonify({
+        "coin": COIN_SYMBOL,
+        "protocol_value": calculate_protocol_value(),
+        "unit": "compute-cost-index"
+    }), 200
 
 def sign_transaction(private_key_hex, tx_data):
     """
@@ -869,6 +950,7 @@ def new_transaction_api():
                 'coin_symbol': COIN_SYMBOL,
                 'transaction_id': transaction['id']}
     return jsonify(response), 201
+
 
 def broadcast_tx_to_peers(tx):
     """Envia uma transação para todos os peers conhecidos."""
@@ -1362,6 +1444,19 @@ def auto_sync_checker(blockchain_instance):
             print(f"[SYNC_CHECKER ERROR] Erro no verificador de sincronização: {e}")
         time.sleep(60) # Verifica a cada 60 segundos
 
+def safe_json_response(resp, peer):
+    try:
+        if resp.status_code != 200:
+            print(f"[NET] {peer} retornou status {resp.status_code}")
+            return None
+        if 'application/json' not in resp.headers.get('Content-Type', ''):
+            print(f"[NET] {peer} não retornou JSON")
+            return None
+        return resp.json()
+    except Exception as e:
+        print(f"[NET] JSON inválido de {peer}: {e}")
+        return None
+
 def comparar_ultimos_blocos(blockchain_instance):
     """Compara o último bloco local com o dos peers e inicia a resolução de conflitos se houver diferença."""
     if blockchain_instance is None or blockchain_instance.last_block() is None:
@@ -1378,8 +1473,9 @@ def comparar_ultimos_blocos(blockchain_instance):
         if peer == meu_url:
             continue
         try:
-            r = requests.get(f"{peer}/sync/check", timeout=5)
-            data = r.json()
+            response = requests.get(f"{node_url}/chain", timeout=10)
+            data = response.json()
+
             peer_index = data.get('index')
             peer_hash = data.get('hash')
 
@@ -1410,7 +1506,7 @@ def comparar_ultimos_blocos(blockchain_instance):
 # --- Execução Principal ---
 def run_server():
     global blockchain, meu_ip, meu_url, port
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 5001))
     
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
