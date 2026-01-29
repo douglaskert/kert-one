@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Kert-One | Digital Bank</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/elliptic/6.5.4/elliptic.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        :root {
+            --inter-orange: #FF7A00;
+            --inter-dark: #1a1a1a;
+        }
+
+        body {
+            background-color: #f1f5f9;
+            color: #1e293b;
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .bg-inter-orange { background-color: var(--inter-orange); }
+        .text-inter-orange { color: var(--inter-orange); }
+        .bg-inter-dark { background-color: var(--inter-dark); }
+
+        .tab { display: none; }
+        .tab.active { display: block; animation: slideUp 0.3s ease-out; }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(15px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .glass { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(12px); }
+        
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        #reader { border: none !important; border-radius: 1.5rem; overflow: hidden; position: relative; }
+        #reader video { object-fit: cover !important; width: 100% !important; height: 100% !important; }
+
+        .nav-active { color: var(--inter-orange) !important; }
+        .nav-active i { transform: scale(1.1); transition: transform 0.2s; }
+    </style>
+</head>
+<body class="flex justify-center min-h-screen">
+
+    <div class="w-full max-w-md bg-white min-h-screen shadow-2xl flex flex-col relative overflow-x-hidden">
+        
+        <header id="appHeader" class="hidden p-5 flex items-center justify-between sticky top-0 z-50 glass border-b border-gray-100">
+            <div class="flex items-center gap-3">
+                <div class="relative cursor-pointer" onclick="show('profile')">
+                    <img id="userPhoto" src="https://ui-avatars.com/api/?name=User&background=FF7A00&color=fff" class="w-10 h-10 rounded-full border-2 border-orange-100 object-cover">
+                    <div class="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Bem-vindo</p>
+                    <h2 id="displayUsername" class="text-sm font-bold text-gray-800">Usuário Kert</h2>
+                </div>
+            </div>
+            <div class="flex gap-4">
+                <button onclick="updateBalance()" class="text-gray-400 hover:text-orange-500 transition active:rotate-180 duration-500">
+                    <i class="fa-solid fa-rotate text-lg"></i>
+                </button>
+                <button onclick="logout()" class="text-gray-400 hover:text-red-500 transition">
+                    <i class="fa-solid fa-power-off text-lg"></i>
+                </button>
+            </div>
+        </header>
+
+        <main class="flex-1 px-5 py-4 overflow-y-auto pb-28">
+
+            <div id="auth" class="tab active pt-12 text-center">
+                <div class="w-24 h-24 bg-inter-orange rounded-[2.5rem] mx-auto flex items-center justify-center text-white text-5xl font-black mb-6 shadow-2xl shadow-orange-200 rotate-3">K</div>
+                <h2 class="text-3xl font-extrabold text-gray-900 mb-2">Kert-One</h2>
+                <p class="text-gray-500 mb-12">O banco digital da nova geração.</p>
+                
+                <div class="space-y-4">
+                    <button id="createBtn" onclick="generateWallet()" class="w-full bg-inter-orange text-white py-4 rounded-2xl font-bold shadow-lg shadow-orange-100 active:scale-[0.98] transition-all">Criar Conta Grátis</button>
+                    <button onclick="show('import')" class="w-full bg-gray-50 text-gray-600 py-4 rounded-2xl font-bold border border-gray-200 hover:bg-gray-100 transition">Acessar com Chave</button>
+                </div>
+                
+                <p class="mt-16 text-[11px] text-gray-400 leading-relaxed">
+                    Sistema recomendado para empresas:<br>
+                    <a href="https://genesisaas.com.br/" target="_blank" class="text-orange-500 font-bold hover:underline">Genesis SaaS - Soluções Completas</a>
+                </p>
+            </div>
+
+            <div id="import" class="tab">
+                <button onclick="show('auth')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2 hover:text-gray-600 transition"><i class="fa-solid fa-arrow-left"></i> VOLTAR</button>
+                <h2 class="text-2xl font-bold mb-4">Acessar Conta</h2>
+                <textarea id="pk" class="w-full p-4 rounded-2xl bg-gray-50 border border-gray-200 mb-6 h-32 outline-none focus:ring-2 focus:ring-orange-500 transition-all font-mono text-sm" placeholder="Sua Private Key Hexadecimal"></textarea>
+                <button onclick="importWallet()" class="w-full bg-inter-dark text-white py-4 rounded-2xl font-bold hover:bg-black transition-colors">Entrar na Conta</button>
+            </div>
+
+            <div id="main" class="tab">
+                <div class="bg-inter-dark rounded-[2.5rem] p-8 text-white mb-8 shadow-2xl relative overflow-hidden group">
+                    <p class="text-gray-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-3">Saldo Disponível</p>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-xl font-medium text-orange-400">K$</span>
+                        <h2 id="balance" class="text-5xl font-bold tracking-tight tabular-nums">0.00</h2>
+                    </div>
+                    
+                    <div class="mt-10 flex items-center justify-between bg-white/5 border border-white/10 p-3.5 rounded-2xl backdrop-blur-sm">
+                        <div class="flex flex-col overflow-hidden">
+                            <span class="text-[9px] text-gray-500 uppercase font-black tracking-wider">Endereço</span>
+                            <code id="addr" class="text-[10px] text-gray-300 truncate w-40 font-mono"></code>
+                        </div>
+                        <button onclick="copyText(document.getElementById('addr').innerText, 'Endereço copiado!')" class="bg-orange-500 text-white text-[10px] px-4 py-2 rounded-xl font-bold active:scale-90 transition-all">COPIAR</button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-4 gap-4 mb-10">
+                    <button onclick="show('send')" class="flex flex-col items-center gap-2">
+                        <div class="w-14 h-14 bg-orange-50 rounded-2xl flex items-center justify-center text-orange-500 text-xl"><i class="fa-solid fa-paper-plane"></i></div>
+                        <span class="text-[11px] font-bold text-gray-600">Pagar</span>
+                    </button>
+                    <button onclick="showReceive()" class="flex flex-col items-center gap-2">
+                        <div class="w-14 h-14 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-500 text-xl"><i class="fa-solid fa-qrcode"></i></div>
+                        <span class="text-[11px] font-bold text-gray-600">Receber</span>
+                    </button>
+                    <button onclick="show('history')" class="flex flex-col items-center gap-2">
+                        <div class="w-14 h-14 bg-green-50 rounded-2xl flex items-center justify-center text-green-500 text-xl"><i class="fa-solid fa-receipt"></i></div>
+                        <span class="text-[11px] font-bold text-gray-600">Extrato</span>
+                    </button>
+                    <button onclick="show('profile')" class="flex flex-col items-center gap-2">
+                        <div class="w-14 h-14 bg-purple-50 rounded-2xl flex items-center justify-center text-purple-500 text-xl"><i class="fa-solid fa-sliders"></i></div>
+                        <span class="text-[11px] font-bold text-gray-600">Ajustes</span>
+                    </button>
+                </div>
+
+                <h3 class="font-bold text-gray-800 text-lg mb-5">Atividade Recente</h3>
+                <div id="recentList" class="space-y-4"></div>
+            </div>
+
+            <div id="send" class="tab">
+                <button onclick="show('main')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-xmark"></i> CANCELAR</button>
+                <h2 class="text-2xl font-bold mb-8">Enviar Pagamento</h2>
+                
+                <div id="reader" class="mb-8 bg-gray-100 aspect-square flex items-center justify-center border-2 border-dashed border-gray-300">
+                    <button onclick="startScanner()" id="scannerBtn" class="bg-white px-8 py-4 rounded-2xl shadow-xl font-bold text-sm flex items-center gap-3">
+                        <i class="fa-solid fa-camera text-orange-500"></i> Abrir Scanner
+                    </button>
+                </div>
+
+                <div class="space-y-5">
+                    <input id="to" class="w-full p-4 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:border-orange-500 text-sm font-mono" placeholder="Endereço de Destino">
+                    <div class="relative">
+                        <span class="absolute left-5 top-1/2 -translate-y-1/2 font-bold text-orange-500">K$</span>
+                        <input id="amount" type="number" step="0.01" class="w-full p-4 pl-14 bg-gray-50 rounded-2xl border border-gray-100 outline-none focus:border-orange-500 font-bold text-2xl" placeholder="0.00">
+                    </div>
+                    <button onclick="processPayment()" class="w-full bg-inter-orange text-white py-4 rounded-2xl font-bold text-lg shadow-2xl shadow-orange-100 active:scale-95 transition-all">Confirmar Envio</button>
+                </div>
+            </div>
+
+            <div id="receive" class="tab text-center">
+                <button onclick="show('main')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-arrow-left"></i> VOLTAR</button>
+                <h2 class="text-2xl font-bold mb-12">Receber Pagamento</h2>
+                <div id="qr" class="flex justify-center mb-12"></div>
+                <div onclick="copyText(document.getElementById('recvAddr').innerText, 'Endereço copiado!')" class="bg-gray-50 p-6 rounded-[2rem] border border-dashed border-gray-200 cursor-pointer">
+                    <code id="recvAddr" class="block text-xs break-all font-mono text-gray-600"></code>
+                </div>
+            </div>
+
+            <div id="history" class="tab">
+                <button onclick="show('main')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-arrow-left"></i> VOLTAR</button>
+                <h2 class="text-2xl font-bold mb-6">Extrato</h2>
+                <div id="fullHistoryList" class="space-y-4"></div>
+            </div>
+
+            <div id="profile" class="tab">
+                <button onclick="show('main')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-arrow-left"></i> VOLTAR</button>
+                <h2 class="text-2xl font-bold mb-8">Meu Perfil</h2>
+                <input id="usernameInput" class="w-full p-4 bg-gray-50 rounded-2xl border border-gray-100 mb-4 font-semibold" placeholder="Nome de Usuário">
+                <!-- FOTO: adicionado: -->
+                <input type="file" id="photoInput" accept="image/*" class="w-full p-3 bg-gray-50 rounded-2xl border border-gray-200 mb-4">
+                <button onclick="saveProfile()" class="w-full bg-inter-orange text-white py-4 rounded-2xl font-bold mb-10">Salvar Alterações</button>
+                <button onclick="exportKey()" class="w-full text-sm text-gray-600 font-bold py-4 border border-dashed border-gray-300 rounded-2xl"><i class="fa-solid fa-key mr-2 text-orange-500"></i> Backup da Chave Privada</button>
+            </div>
+
+            <div id="receipt" class="tab">
+                <div class="bg-white p-10 rounded-[3rem] border-2 border-dashed border-gray-200 text-center">
+                    <div class="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center text-green-600 text-4xl mx-auto mb-6"><i class="fa-solid fa-circle-check"></i></div>
+                    <h2 class="text-2xl font-bold mb-1">Sucesso!</h2>
+                    <p id="receiptDate" class="text-[11px] text-gray-400 mb-8"></p>
+                    <div class="space-y-4 text-left border-y border-gray-100 py-8">
+                        <div class="flex justify-between"><span class="text-xs text-gray-400">Valor</span><span id="receiptAmount" class="font-bold"></span></div>
+                        <div class="flex justify-between"><span class="text-xs text-gray-400">Para</span><span id="receiptTo" class="text-[10px] font-mono truncate w-32 text-right"></span></div>
+                        <div class="flex justify-between"><span class="text-xs text-gray-400">Protocolo</span><span id="receiptId" class="text-[10px] text-gray-500 font-mono"></span></div>
+                    </div>
+                    <div class="mt-4 flex gap-3">
+                        <button onclick="shareReceipt()" class="flex-1 bg-white border border-gray-200 py-3 rounded-xl font-bold">Compartilhar</button>
+                        <button onclick="show('main')" class="flex-1 bg-inter-dark text-white py-3 rounded-xl font-bold">Fechar</button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+
+        <nav id="navbar" class="hidden fixed bottom-0 max-w-md w-full bg-white border-t border-gray-100 px-6 py-4 flex justify-around items-center z-[100]">
+            <button onclick="show('main')" id="nav-main" class="nav-link text-gray-300 flex flex-col items-center gap-1.5"><i class="fa-solid fa-house-user text-xl"></i></button>
+            <button onclick="show('send')" id="nav-send" class="nav-link text-gray-300 flex flex-col items-center gap-1.5"><i class="fa-solid fa-paper-plane text-xl"></i></button>
+            <button onclick="show('history')" id="nav-history" class="nav-link text-gray-300 flex flex-col items-center gap-1.5"><i class="fa-solid fa-receipt text-xl"></i></button>
+            <button onclick="show('profile')" id="nav-profile" class="nav-link text-gray-300 flex flex-col items-center gap-1.5"><i class="fa-solid fa-user-gear text-xl"></i></button>
+        </nav>
+    </div>
+
+    <div id="toast" class="fixed bottom-28 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-8 py-4 rounded-3xl text-xs font-bold opacity-0 transition-all duration-300 z-[999]">Notificação</div>
+
+<script>
+/*
+  Script completo: corrige assinaturas, adiciona perfil/foto, histórico persistente,
+  QR com nome, scanner que salva mapa (addressBook), detecção de recebimentos consultando /chain,
+  e mantém seu layout e todos os elementos originais.
+*/
+
+const API = window.location.origin;
+const EC = new elliptic.ec('secp256k1');
+
+let wallet = {};
+let history = [];
+let profile = { name: "Usuário Kert", photo: "" };
+let addressBook = {}; // mapa address -> name (preenchido quando o usuário lê um QR com nome)
+let html5QrCode = null;
+let lastSeenBlockIndex = 0; // usado para detectar novos blocos/txs
+let lastScannedName = "";   // nome lido via QR (para preencher histórico do envio)
+
+// helpers DOM
+const $ = id => document.getElementById(id);
+
+// ---------------- INIT ----------------
+window.onload = async () => {
+    loadData();
+    // Exibir perfil salvo
+    $('displayUsername').innerText = profile.name;
+    if(profile.photo) $('userPhoto').src = profile.photo;
+    if(wallet.address) {
+        loginSuccess(false);
+        await initLastSeenBlock();
+        startAutoReceiveWatcher();
+    }
+};
+
+// ---------------- STORAGE ----------------
+function loadData() {
+    try {
+        wallet = JSON.parse(localStorage.getItem('kert_wallet') || "{}");
+        history = JSON.parse(localStorage.getItem('kert_history') || "[]");
+        profile = JSON.parse(localStorage.getItem('kert_profile') || '{"name":"Usuário Kert","photo":""}');
+        addressBook = JSON.parse(localStorage.getItem('kert_address_book') || "{}");
+        lastSeenBlockIndex = parseInt(localStorage.getItem('kert_last_block') || "0");
+    } catch(e) {
+        console.error("Erro ao carregar dados locais:", e);
+        wallet = {}; history = []; profile = { name: "Usuário Kert", photo: ""}; addressBook = {}; lastSeenBlockIndex = 0;
+    }
+    // fill UI fields
+    $('displayUsername').innerText = profile.name;
+    if($('usernameInput')) $('usernameInput').value = profile.name;
+    if(profile.photo) $('userPhoto').src = profile.photo;
+    if(wallet.address) $('addr').innerText = wallet.address;
+}
+
+function saveData() {
+    localStorage.setItem('kert_wallet', JSON.stringify(wallet));
+    localStorage.setItem('kert_history', JSON.stringify(history));
+    localStorage.setItem('kert_profile', JSON.stringify(profile));
+    localStorage.setItem('kert_address_book', JSON.stringify(addressBook));
+    localStorage.setItem('kert_last_block', String(lastSeenBlockIndex));
+}
+
+// ---------------- UI ----------------
+function show(id) {
+    document.querySelectorAll('.tab').forEach(e => e.classList.remove('active'));
+    const el = document.getElementById(id);
+    if(el) el.classList.add('active');
+
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('nav-active'));
+    if(document.getElementById(`nav-${id}`)) document.getElementById(`nav-${id}`).classList.add('nav-active');
+
+    if(id === 'main') renderRecent();
+    if(id === 'history') renderFullHistory();
+    // stop scanner when leaving send
+    if(id !== 'send' && html5QrCode) stopScanner();
+}
+
+function notify(msg) {
+    const t = $('toast');
+    t.innerText = msg;
+    t.classList.add('opacity-100');
+    setTimeout(() => t.classList.remove('opacity-100'), 2500);
+}
+
+function copyText(text, feedback = 'Copiado!') {
+    if(!text) return;
+    navigator.clipboard?.writeText(text).then(() => notify(feedback)).catch(()=> notify("Erro ao copiar"));
+}
+
+// ---------------- ADDRESS DERIVATION (igual Python) ----------------
+function pubToAddress(pubHex){
+    // IGUAL AO PYTHON
+    if(pubHex.startsWith("04") && pubHex.length === 130){
+        pubHex = pubHex.slice(2);
+    }
+    const words = CryptoJS.enc.Hex.parse(pubHex);
+    return CryptoJS.SHA256(words).toString().substring(0,40);
+}
+
+
+// ---------------- WALLET ----------------
+function generateWallet() {
+    const key = EC.genKeyPair();
+    wallet = {
+        private: key.getPrivate('hex'),
+        public: key.getPublic('hex'),
+        address: pubToAddress(key.getPublic('hex'))
+    };
+    saveData();
+    loginSuccess();
+}
+
+function importWallet() {
+    const pkVal = ($('pk') && $('pk').value) ? $('pk').value.trim() : "";
+    if(!pkVal) return notify("Cole sua private key");
+    try {
+        const key = EC.keyFromPrivate(pkVal, 'hex');
+        wallet = {
+            private: pkVal,
+            public: key.getPublic('hex'),
+            address: pubToAddress(key.getPublic('hex'))
+        };
+        saveData();
+        loginSuccess();
+    } catch (e) {
+        notify("Chave inválida!");
+    }
+}
+
+// ---------------- LOGIN / BALANCE ----------------
+function loginSuccess(welcome = true) {
+    $('appHeader').classList.remove('hidden');
+    $('navbar').classList.remove('hidden');
+    if(welcome) notify("Bem-vindo!");
+    $('addr').innerText = wallet.address || '';
+    show('main');
+    updateBalance();
+}
+
+async function updateBalance() {
+    if(!wallet.address) return;
+    try {
+        const r = await axios.get(`${API}/balance/${wallet.address}`);
+        $('balance').innerText = parseFloat(r.data.balance).toFixed(2);
+    } catch (e) {
+        console.warn("Erro ao atualizar saldo", e);
+        notify("Erro ao atualizar saldo");
+    }
+}
+
+// ---------------- SIGN TRANSACTION (compatível com Python) ----------------
+// IMPORTANT: Python verifies signature over JSON with keys sorted and separators(",", ":")
+// We replicate that by JSON.stringify with sorted keys (default stringify has no extra spaces).
+function compactJsonSorted(obj) {
+    const keys = Object.keys(obj).sort();
+    const ordered = {};
+    for(const k of keys) ordered[k] = obj[k];
+    // JSON.stringify without spaces -> matches Python's separators(',',':')
+    return JSON.stringify(ordered, keys);
+}
+
+function signTx(recipient, amount) {
+
+    const amount_str = Number(amount).toFixed(8);
+    const fee_str = (0.01).toFixed(8);
+
+    // 🔒 ORDEM EXATA DO PYTHON
+    const messageObj = {
+        amount: amount_str,
+        fee: fee_str,
+        recipient: recipient,
+        sender: wallet.address
+    };
+
+    // 🔒 JSON BINÁRIO IDÊNTICO AO json.dumps(sort_keys=True,separators=(",",":"))
+    const messageJson = JSON.stringify(messageObj, Object.keys(messageObj).sort());
+
+    // 🔒 HASH IGUAL AO PYTHON
+    const hashHex = CryptoJS.SHA256(messageJson).toString();
+
+    const key = EC.keyFromPrivate(wallet.private, 'hex');
+
+    // 🔥 CRÍTICO: ASSINAR O DIGEST, NÃO A STRING
+    const sig = key.sign(hashHex, { canonical: true });
+
+    // 🔥 ASSINATURA CRUA r||s (igual sign_digest do Python)
+    const r = sig.r.toString('hex').padStart(64, '0');
+    const s = sig.s.toString('hex').padStart(64, '0');
+    const signature = r + s;
+
+    // 🔥 CHAVE PÚBLICA NO FORMATO QUE O NODE ESPERA (64 bytes, SEM 04)
+    let publicKeyHex = key.getPublic('hex');
+    if (publicKeyHex.startsWith("04")) {
+        publicKeyHex = publicKeyHex.slice(2);
+    }
+
+    return {
+        id: crypto.randomUUID(),
+        sender: wallet.address,
+        recipient: recipient,
+        amount: amount_str,
+        fee: fee_str,
+        public_key: publicKeyHex,
+        signature: signature,
+        timestamp: Date.now()
+    };
+}
+
+
+// ---------------- PROCESS PAYMENT ----------------
+async function processPayment() {
+    const toEl = $('to');
+    const amountEl = $('amount');
+    if(!toEl || !amountEl) return;
+    const toAddr = toEl.value.trim();
+    const amt = parseFloat(amountEl.value);
+    if(!toAddr || isNaN(amt) || amt <= 0) return notify("Valor inválido");
+
+    // prepare tx
+    const tx = signTx(toAddr, amt);
+
+    try {
+        // send to backend
+        const res = await axios.post(`${API}/tx/new`, tx, { headers: { 'Content-Type': 'application/json' } });
+
+        // record history (outgoing): use lastScannedName if available, else lookup addressBook
+        let recipientName = lastScannedName || addressBook[toAddr] || toAddr;
+        const now = new Date().toLocaleString();
+        history.unshift({
+            id: tx.id,
+            type: 'envio',
+            amount: parseFloat(tx.amount),
+            to: toAddr,
+            name: recipientName,
+            date: now
+        });
+
+        // If we scanned a name for this address, save in addressBook for future
+        if(lastScannedName) {
+            addressBook[toAddr] = lastScannedName;
+            lastScannedName = "";
+            saveData();
+        } else {
+            saveData();
+        }
+
+        // show receipt
+        $('receiptAmount').innerText = `K$ ${parseFloat(tx.amount).toFixed(2)}`;
+        $('receiptTo').innerText = recipientName;
+        $('receiptId').innerText = tx.id;
+        $('receiptDate').innerText = now;
+
+        renderRecent();
+        show('receipt');
+        updateBalance();
+    } catch (err) {
+        console.error("Erro ao enviar TX:", err);
+        notify(err?.response?.data?.message || "Erro na transação");
+    }
+}
+
+// ---------------- RECEIVE (QR with name) ----------------
+function showReceive() {
+    show('receive');
+    if(!wallet.address) return notify("Crie ou importe uma conta primeiro");
+    const payload = JSON.stringify({ address: wallet.address, name: profile.name });
+    $('recvAddr').innerText = wallet.address;
+
+    const qrContainer = $('qr');
+    qrContainer.innerHTML = "";
+    const qr = qrcode(0, 'M');
+    qr.addData(payload);
+    qr.make();
+    qrContainer.innerHTML = qr.createImgTag(5);
+}
+
+// ---------------- SCANNER ----------------
+function startScanner() {
+    if(html5QrCode) stopScanner();
+    html5QrCode = new Html5Qrcode("reader");
+    html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, (text) => {
+        try {
+            // try to parse JSON payload {address, name}
+            const data = JSON.parse(text);
+            if(data.address) {
+                $('to').value = data.address;
+                if(data.name) {
+                    lastScannedName = data.name;
+                    // save mapping to addressBook for convenience
+                    addressBook[data.address] = data.name;
+                    saveData();
+                    notify(`Nome detectado: ${data.name}`);
+                } else {
+                    notify("Endereço lido");
+                }
+            } else {
+                $('to').value = text;
+                notify("Endereço lido");
+            }
+        } catch (e) {
+            // fallback: raw string
+            $('to').value = text;
+            notify("QR lido");
+        }
+        stopScanner();
+    }).catch(err => {
+        console.error("Erro ao iniciar scanner:", err);
+        notify("Falha ao acessar câmera");
+    });
+}
+
+function stopScanner() {
+    if(html5QrCode) {
+        html5QrCode.stop().then(() => {
+            html5QrCode.clear();
+            html5QrCode = null;
+        }).catch(()=> { html5QrCode = null; });
+    }
+}
+
+// ---------------- HISTORY RENDER ----------------
+function renderRecent() {
+    const list = $('recentList');
+    if(!list) return;
+    list.innerHTML = history.slice(0, 3).map(tx => `
+        <div class="flex justify-between p-4 bg-gray-50 rounded-2xl">
+            <div>
+                <p class="text-xs font-bold">${tx.name || (tx.to || tx.from) || 'Você'}</p>
+                <p class="text-[10px] text-gray-400">${tx.date}</p>
+            </div>
+            <span class="font-bold">${tx.type === 'envio' ? '-' : '+'} K$ ${parseFloat(tx.amount).toFixed(2)}</span>
+        </div>
+    `).join('') || "<p class='text-center text-gray-400 py-4'>Nenhuma atividade</p>";
+}
+
+function renderFullHistory() {
+    const list = $('fullHistoryList');
+    if(!list) return;
+    list.innerHTML = history.map(tx => `
+        <div class="p-4 border border-gray-100 rounded-2xl mb-2">
+            <div class="flex justify-between mb-1">
+                <span class="text-xs font-bold">${tx.name || (tx.to || tx.from) || 'Você'}</span>
+                <span class="font-bold">K$ ${parseFloat(tx.amount).toFixed(2)}</span>
+            </div>
+            <div class="flex justify-between text-[10px] text-gray-400">
+                <span>${tx.date}</span>
+                <span>${tx.id}</span>
+            </div>
+        </div>
+    `).join('') || "<p class='text-center text-gray-400 py-4'>Sem transações</p>";
+}
+
+// ---------------- CHAIN SCAN TO DETECT INCOMING TXs ----------------
+async function initLastSeenBlock() {
+    try {
+        const r = await axios.get(`${API}/chain`);
+        const chain = r.data.chain || [];
+        if(chain.length) {
+            lastSeenBlockIndex = chain[chain.length - 1].index || chain.length;
+            localStorage.setItem('kert_last_block', String(lastSeenBlockIndex));
+        }
+    } catch (e) {
+        console.warn("Não foi possível inicializar lastSeenBlockIndex", e);
+    }
+}
+
+async function startAutoReceiveWatcher() {
+    if(!wallet.address) return;
+    // ensure lastSeenBlockIndex initialized
+    await initLastSeenBlock();
+
+    setInterval(async () => {
+        if(!wallet.address) return;
+        try {
+            // 1) update balance quickly
+            await updateBalance();
+
+            // 2) fetch chain and look for new blocks > lastSeenBlockIndex
+            const r = await axios.get(`${API}/chain`);
+            const chain = r.data.chain || [];
+            if(chain.length === 0) return;
+
+            // find blocks with index > lastSeenBlockIndex
+            const newBlocks = chain.filter(b => b.index > lastSeenBlockIndex).sort((a,b)=>a.index-b.index);
+            if(newBlocks.length === 0) return;
+
+            for(const blk of newBlocks) {
+                for(const tx of blk.transactions || []) {
+                    try {
+                        // only non-coinbase txs
+                        if(tx.sender === '0') continue;
+                        if(tx.recipient !== wallet.address) continue;
+
+                        // avoid duplicates by checking history ids
+                        const known = history.find(h => h.id === tx.id);
+                        if(known) continue;
+
+                        // Determine sender name if we have it in addressBook
+                        const senderName = addressBook[tx.sender] || tx.sender;
+
+                        // push to history (recebido)
+                        history.unshift({
+                            id: tx.id || ("RX"+Date.now()),
+                            type: 'recebido',
+                            amount: parseFloat(parseFloat(tx.amount).toFixed(8)),
+                            from: tx.sender,
+                            name: senderName,
+                            date: tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : new Date().toLocaleString()
+                        });
+
+                        // notify
+                        notify(`Recebido K$ ${parseFloat(tx.amount).toFixed(2)} de ${senderName}`);
+                        saveData();
+                        renderRecent();
+                    } catch (e) {
+                        console.warn("Erro ao processar tx no bloco:", e);
+                    }
+                }
+                lastSeenBlockIndex = Math.max(lastSeenBlockIndex, blk.index);
+            }
+            localStorage.setItem('kert_last_block', String(lastSeenBlockIndex));
+        } catch (e) {
+            console.warn("Erro no watcher de recebimento:", e);
+        }
+    }, 5000);
+}
+
+// ---------------- PROFILE ----------------
+function saveProfile() {
+    const nameVal = ($('usernameInput') && $('usernameInput').value.trim()) || profile.name;
+    profile.name = nameVal;
+    const file = $('photoInput')?.files?.[0];
+    if(file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            profile.photo = e.target.result;
+            applyProfile();
+        };
+        reader.readAsDataURL(file);
+    } else {
+        applyProfile();
+    }
+}
+
+function applyProfile() {
+    $('displayUsername').innerText = profile.name;
+    if(profile.photo) $('userPhoto').src = profile.photo;
+    saveData();
+    notify("Perfil salvo!");
+    show('main');
+}
+
+// ---------------- EXPORT KEY ----------------
+function exportKey() {
+    if(!wallet.address) return notify("Sem carteira");
+    const blob = new Blob([`Endereço: ${wallet.address}\nChave Privada: ${wallet.private}`], { type: "text/plain" });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = "backup_kert.txt";
+    a.click();
+}
+
+// ---------------- SHARE RECEIPT ----------------
+function shareReceipt() {
+    const text = `${$('receiptAmount').innerText}\nPara: ${$('receiptTo').innerText}\nProtocolo: ${$('receiptId').innerText}\nData: ${$('receiptDate').innerText}`;
+    if(navigator.share) {
+        navigator.share({ text }).catch(()=> copyText(text, "Comprovante copiado"));
+    } else {
+        copyText(text, "Comprovante copiado");
+    }
+}
+
+// ---------------- LOGOUT ----------------
+function logout() {
+    if(confirm("Sair e apagar dados locais?")) {
+        localStorage.removeItem('kert_wallet');
+        localStorage.removeItem('kert_history');
+        localStorage.removeItem('kert_profile');
+        localStorage.removeItem('kert_address_book');
+        localStorage.removeItem('kert_last_block');
+        location.reload();
+    }
+}
+
+// expose some funcs for debugging (optional)
+window._kert = { wallet, profile, history, addressBook };
+
+// initial render of history if any
+renderRecent();
+renderFullHistory();
+
+</script>
+
+</body>
+</html>
