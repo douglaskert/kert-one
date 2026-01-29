@@ -19,14 +19,14 @@ import re
 import shutil
 from flask_cors import CORS
 
-# --- Configurações ---
-DIFFICULTY = 1 # Dificuldade inicial para o bloco Gênese
-MINING_REWARD = 50 # Recompensa padrão (será sobrescrita pela lógica de halving)
+# --- ConfiguraÃ§Ãµes ---
+DIFFICULTY = 1 # Dificuldade inicial para o bloco GÃªnese
+MINING_REWARD = 50 # Recompensa padrÃ£o (serÃ¡ sobrescrita pela lÃ³gica de halving)
 DATABASE = 'chain.db'
 COIN_NAME = "Kert-One"
 COIN_SYMBOL = "KERT"
 PEERS_FILE = 'peers.json'
-WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do cliente - mantido para compatibilidade, mas não usado pela GUI
+WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do cliente - mantido para compatibilidade, mas nÃ£o usado pela GUI
 used_proofs = set()
 MAX_STORED_PROOFS = 5000
 # ================= GENESIS / CONFIG =================
@@ -39,7 +39,7 @@ miner_address = None
 is_mining = False
 miner_lock = threading.Lock()
 
-# --- NÓS SEMENTES (SEED NODES) ---
+# --- NÃ“S SEMENTES (SEED NODES) ---
 SEED_NODES = [
     "https://seed.kert-one.com",
     "https://seend2.kert-one.com",
@@ -68,16 +68,16 @@ app = Flask(__name__)
 node_id = str(uuid4()).replace('-', '')
 CORS(app)
 
-# Variáveis globais para mineração contínua
+# VariÃ¡veis globais para mineraÃ§Ã£o contÃ­nua
 mining_active = False
 miner_thread = None
-miner_address_global = None # Endereço para onde as recompensas de mineração serão enviadas
+miner_address_global = None # EndereÃ§o para onde as recompensas de mineraÃ§Ã£o serÃ£o enviadas
 
 @app.route('/card') 
 def card_web():
     return render_template('card.html')
 
-# --- Funções de Persistência de Peers ---
+# --- FunÃ§Ãµes de PersistÃªncia de Peers ---
 def salvar_peers(peers):
     """Salva a lista de peers conhecidos em um arquivo JSON."""
     with open(PEERS_FILE, 'w') as f:
@@ -87,7 +87,7 @@ def salvar_peers(peers):
 def carregar_peers():
     """Carrega a lista de peers conhecidos de um arquivo JSON."""
     if not os.path.exists(PEERS_FILE):
-        print(f"[PEERS] Arquivo {PEERS_FILE} não encontrado. Iniciando com lista vazia.")
+        print(f"[PEERS] Arquivo {PEERS_FILE} nÃ£o encontrado. Iniciando com lista vazia.")
         return []
     with open(PEERS_FILE, 'r') as f:
         try:
@@ -95,7 +95,7 @@ def carregar_peers():
             print(f"[PEERS] {len(peers)} peers carregados de {PEERS_FILE}.")
             return peers
         except json.JSONDecodeError:
-            print(f"[ERRO] {PEERS_FILE} está corrompido ou vazio. Recriando.")
+            print(f"[ERRO] {PEERS_FILE} estÃ¡ corrompido ou vazio. Recriando.")
             return []
 
 known_nodes = set(carregar_peers())
@@ -146,9 +146,9 @@ class Blockchain:
         self.current_transactions = []
 
         if not self.chain:
-            print("[BOOT] Criando bloco Gênese (fixo)...")
+            print("[BOOT] Criando bloco GÃªnese (fixo)...")
             genesis_difficulty = DIFFICULTY
-            # Gênese com miner, proof, previous_hash e timestamp fixos para todos os nós
+            # GÃªnese com miner, proof, previous_hash e timestamp fixos para todos os nÃ³s
             self.new_block(
                 proof=GENESIS_PROOF,
                 previous_hash=GENESIS_PREVIOUS_HASH,
@@ -164,12 +164,12 @@ class Blockchain:
     def hash(block):
         """
         Cria um hash SHA-256 de um Bloco.
-        Inclui transações e todos os campos (exceto o próprio 'hash').
+        Inclui transaÃ§Ãµes e todos os campos (exceto o prÃ³prio 'hash').
         """
         block_copy = block.copy()
         block_copy.pop('hash', None)  # remove campo hash se existir
 
-        # Garante ordenação consistente das transações
+        # Garante ordenaÃ§Ã£o consistente das transaÃ§Ãµes
         if 'transactions' in block_copy:
             block_copy['transactions'] = sorted(
                 block_copy['transactions'],
@@ -181,60 +181,63 @@ class Blockchain:
 
 
     def get_protocol_price(self):
+        # Retorna o protocol_value do Ãºltimo bloco como float (preciso).
         if not self.chain:
-            return "0.00"
+            return 0.0
         last_block = self.chain[-1]
-        return f"{float(last_block.get('protocol_value', 0.0)):.2f}"
-
+        return float(last_block.get('protocol_value', 0.0))
 
 
     def calculate_protocol_value_for_block(self, block_index, difficulty):
 
         COST_PER_MILLION_HASHES = 0.02
+        BASE_COIN_VALUE = 500.0   # ðŸ”¥ valor inicial
 
-        # 🔒 Genesis usa dificuldade inicial padrão
         if block_index == 1:
-            difficulty = DIFFICULTY  # mesma para todos os nós
+            return BASE_COIN_VALUE
 
         hashes_needed = 16 ** difficulty
         block_cost = (hashes_needed / 1_000_000) * COST_PER_MILLION_HASHES
 
         reward = self._get_mining_reward(block_index)
         if reward == 0:
-            return 0.0
+            return BASE_COIN_VALUE
 
-        # Retorna FLOAT com precisão suficiente (6 casas) — consistente entre nós
-        return round(block_cost / reward, 6)
+        compute_index = block_cost / reward
+
+        # preÃ§o da moeda cresce conforme custo de mineraÃ§Ã£o cresce
+        return round(BASE_COIN_VALUE * (1 + compute_index), 2)
+
 
 
         
     def is_duplicate_transaction(self, new_tx):
-        """Verifica se uma transação já está na fila de transações pendentes ou em um bloco minerado."""
-        # Verificar transações pendentes
+        """Verifica se uma transaÃ§Ã£o jÃ¡ estÃ¡ na fila de transaÃ§Ãµes pendentes ou em um bloco minerado."""
+        # Verificar transaÃ§Ãµes pendentes
         for tx in self.current_transactions:
             if tx.get('id') == new_tx.get('id'):
-                print(f"[DUPLICIDADE] Transação {new_tx.get('id')} já pendente.")
+                print(f"[DUPLICIDADE] TransaÃ§Ã£o {new_tx.get('id')} jÃ¡ pendente.")
                 return True
-            # Verificação mais robusta para transações sem ID (embora todas devam ter)
+            # VerificaÃ§Ã£o mais robusta para transaÃ§Ãµes sem ID (embora todas devam ter)
             if (tx.get('sender') == new_tx.get('sender') and
                 tx.get('recipient') == new_tx.get('recipient') and
                 tx.get('amount') == new_tx.get('amount') and
                 tx.get('fee') == new_tx.get('fee') and
                 tx.get('signature') == new_tx.get('signature')):
-                print(f"[DUPLICIDADE] Detectada transação pendente quase idêntica (sender={new_tx.get('sender')}, amount={new_tx.get('amount')}).")
+                print(f"[DUPLICIDADE] Detectada transaÃ§Ã£o pendente quase idÃªntica (sender={new_tx.get('sender')}, amount={new_tx.get('amount')}).")
                 return True
         
-        # Verificar transações já mineradas
+        # Verificar transaÃ§Ãµes jÃ¡ mineradas
         c = self.conn.cursor()
         c.execute("SELECT 1 FROM txs WHERE id=?", (new_tx.get('id'),))
         if c.fetchone():
-            print(f"[DUPLICIDADE] Transação {new_tx.get('id')} já minerada.")
+            print(f"[DUPLICIDADE] TransaÃ§Ã£o {new_tx.get('id')} jÃ¡ minerada.")
             return True
         return False
 
     @staticmethod
     def custom_asic_resistant_hash(data_bytes, nonce):
-        """Função de hash resistente a ASICs."""
+        """FunÃ§Ã£o de hash resistente a ASICs."""
         raw = data_bytes + str(nonce).encode()
         h1 = hashlib.sha256(raw).digest()
         h2 = hashlib.sha512(h1).digest()
@@ -256,7 +259,7 @@ class Blockchain:
             )
         ''')
 
-        # 🔥 MIGRAÇÃO AUTOMÁTICA
+        # ðŸ”¥ MIGRAÃ‡ÃƒO AUTOMÃTICA
         c.execute("PRAGMA table_info(blocks)")
         columns = [col[1] for col in c.fetchall()]
         if 'protocol_value' not in columns:
@@ -300,7 +303,7 @@ class Blockchain:
                 'miner': miner,
                 'transactions': txs,
                 'difficulty': difficulty,
-                'protocol_value': protocol_value   # 🔒
+                'protocol_value': protocol_value   # ðŸ”’
             }
             chain.append(block)
 
@@ -308,25 +311,25 @@ class Blockchain:
 
 
     def new_block(self, proof, previous_hash, miner, initial_difficulty=None, timestamp=None):
-        """Cria um novo bloco e o adiciona à cadeia."""
+        """Cria um novo bloco e o adiciona Ã  cadeia."""
         block_index = len(self.chain) + 1
         reward = self._get_mining_reward(block_index)
         
         difficulty = self._calculate_difficulty_for_index(block_index) if initial_difficulty is None else initial_difficulty
 
-        # Adiciona a transação de recompensa (coinbase) ao início das transações do bloco
+        # Adiciona a transaÃ§Ã£o de recompensa (coinbase) ao inÃ­cio das transaÃ§Ãµes do bloco
         mining_reward_tx = {
             'id': str(uuid4()), 'sender': '0', 'recipient': miner,
             'amount': f"{reward:.8f}", 'fee': f"{0.0:.8f}", 'signature': '', 'public_key': ''
         }
         
-        # Cria uma cópia das transações pendentes para o novo bloco
+        # Cria uma cÃ³pia das transaÃ§Ãµes pendentes para o novo bloco
         transactions_for_block = list(self.current_transactions)
         transactions_for_block.insert(0, mining_reward_tx) # Insere a recompensa
 
         protocol_value = self.calculate_protocol_value_for_block(block_index, difficulty)
 
-        # REMOVIDA DUPLICIDADE 'miner' (apenas uma ocorrência)
+        # REMOVIDA DUPLICIDADE 'miner' (apenas uma ocorrÃªncia)
         block = {
             'index': block_index,
             'previous_hash': previous_hash,
@@ -335,22 +338,22 @@ class Blockchain:
             'miner': miner,
             'transactions': transactions_for_block,
             'difficulty': difficulty,
-            'protocol_value': protocol_value   # 🔒 AGORA É CONSENSO
+            'protocol_value': protocol_value   # ðŸ”’ AGORA Ã‰ CONSENSO
         }
 
         self.chain.append(block)
 
         self._save_block(block) # Salva o novo bloco no DB
 
-        # Remove as transações que foram incluídas no bloco da lista de transações pendentes
+        # Remove as transaÃ§Ãµes que foram incluÃ­das no bloco da lista de transaÃ§Ãµes pendentes
         mined_tx_ids = {tx['id'] for tx in transactions_for_block if tx['sender'] != '0'}
         self.current_transactions = [tx for tx in self.current_transactions if tx['id'] not in mined_tx_ids]
-        print(f"[BLOCK] Novo bloco {block['index']} forjado com {len(transactions_for_block)} transações.")
+        print(f"[BLOCK] Novo bloco {block['index']} forjado com {len(transactions_for_block)} transaÃ§Ãµes.")
         
         return block
 
     def _save_block(self, block):
-        """Salva um bloco e suas transações no banco de dados."""
+        """Salva um bloco e suas transaÃ§Ãµes no banco de dados."""
         c = self.conn.cursor()
 
         c.execute("""
@@ -364,7 +367,7 @@ class Blockchain:
             block['timestamp'],
             block['miner'],
             block['difficulty'],
-            block['protocol_value']   # 🔒 CONSENSO ECONÔMICO
+            block['protocol_value']   # ðŸ”’ CONSENSO ECONÃ”MICO
         ))
 
         for t in block['transactions']:
@@ -387,22 +390,22 @@ class Blockchain:
 
 
     def new_tx(self, sender, recipient, amount_str, fee_str, signature, public_key):
-        """Adiciona uma nova transação à lista de transações pendentes.
-           amount_str e fee_str já devem ser strings formatadas."""
+        """Adiciona uma nova transaÃ§Ã£o Ã  lista de transaÃ§Ãµes pendentes.
+           amount_str e fee_str jÃ¡ devem ser strings formatadas."""
         tx = {
             'id': str(uuid4()), 'sender': sender, 'recipient': recipient,
             'amount': amount_str, 'fee': fee_str, 'signature': signature, 'public_key': public_key
         }
         if self.is_duplicate_transaction(tx):
-            print(f"[TX] Transação {tx.get('id', '')} já pendente ou minerada. Ignorando.")
+            print(f"[TX] TransaÃ§Ã£o {tx.get('id', '')} jÃ¡ pendente ou minerada. Ignorando.")
             return -1
         
         self.current_transactions.append(tx)
-        print(f"[TX] Nova transação adicionada: {tx['id']}")
+        print(f"[TX] Nova transaÃ§Ã£o adicionada: {tx['id']}")
         return self.last_block()['index'] + 1 if self.chain else 1
 
     def _get_mining_reward(self, block_index):
-        """Calcula a recompensa de mineração com base no índice do bloco (halving)."""
+        """Calcula a recompensa de mineraÃ§Ã£o com base no Ã­ndice do bloco (halving)."""
         if block_index <= 1200:
             return 50.0
         elif block_index <= 2200:
@@ -424,27 +427,27 @@ class Blockchain:
             return max(reward, 0.0)
 
     def last_block(self):
-        """Retorna o último bloco da cadeia."""
+        """Retorna o Ãºltimo bloco da cadeia."""
         return self.chain[-1] if self.chain else None
 
     def proof_of_work(self, last_proof):
         """
-        Encontra uma prova de trabalho que satisfaça os requisitos de dificuldade.
-        Retorna a prova (nonce) ou -1 se a mineração for abortada.
+        Encontra uma prova de trabalho que satisfaÃ§a os requisitos de dificuldade.
+        Retorna a prova (nonce) ou -1 se a mineraÃ§Ã£o for abortada.
         """
         difficulty_for_pow = self._calculate_difficulty_for_index(len(self.chain) + 1)
         proof = 0
-        print(f"Iniciando mineração com dificuldade {difficulty_for_pow}...")
+        print(f"Iniciando mineraÃ§Ã£o com dificuldade {difficulty_for_pow}...")
         start_time = time.time()
         
         while not self.valid_proof(last_proof, proof, difficulty_for_pow):
-            global mining_active # Usa a variável de controle da mineração contínua
-            if not mining_active: # Verifica o flag de mineração
-                print("[Miner] Sinal para parar recebido durante PoW. Abortando mineração.")
+            global mining_active # Usa a variÃ¡vel de controle da mineraÃ§Ã£o contÃ­nua
+            if not mining_active: # Verifica o flag de mineraÃ§Ã£o
+                print("[Miner] Sinal para parar recebido durante PoW. Abortando mineraÃ§Ã£o.")
                 return -1
             
             # Verifica se um novo bloco chegou enquanto estamos minerando
-            # Isso é crucial para evitar mineração em uma cadeia desatualizada
+            # Isso Ã© crucial para evitar mineraÃ§Ã£o em uma cadeia desatualizada
             if self.last_block()['proof'] != last_proof:
                 print("[Miner] Outro bloco chegou na cadeia principal durante PoW. Abortando e reiniciando.")
                 return -1
@@ -452,7 +455,7 @@ class Blockchain:
             if time.time() - start_time > 10 and proof % 100000 == 0:
                 print(f" Tentativa: {proof}")
             proof += 1
-        print(f"Mineração concluída: proof = {proof}")
+        print(f"MineraÃ§Ã£o concluÃ­da: proof = {proof}")
         return proof
 
     @staticmethod
@@ -465,24 +468,24 @@ class Blockchain:
         return guess_hash[:difficulty] == "0" * difficulty
 
     def tx_already_mined(self, tx_id):
-        """Verifica se uma transação com o dado ID já foi minerada em algum bloco."""
+        """Verifica se uma transaÃ§Ã£o com o dado ID jÃ¡ foi minerada em algum bloco."""
         c = self.conn.cursor()
         c.execute("SELECT 1 FROM txs WHERE id=?", (tx_id,))
         return c.fetchone() is not None
 
     def valid_chain(self, chain):
         """
-        Determina se uma dada cadeia de blocos é válida.
-        Verifica hashes, provas de trabalho, transações, dificuldade
-        E VALIDA O PROTOCOL VALUE COM TOLERÂNCIA (CONSENSO ECONÔMICO).
+        Determina se uma dada cadeia de blocos Ã© vÃ¡lida.
+        Verifica hashes, provas de trabalho, transaÃ§Ãµes, dificuldade
+        E VALIDA O PROTOCOL VALUE COM TOLERÃ‚NCIA (CONSENSO ECONÃ”MICO).
         """
         if not chain:
             print("[VAL_CHAIN_ERRO] Cadeia vazia.")
             return False
 
-        # Bloco Gênese
+        # Bloco GÃªnese
         if chain[0]['index'] != 1 or chain[0]['previous_hash'] != '1' or chain[0]['proof'] != 100:
-            print("[VAL_CHAIN_ERRO] Bloco Gênese inválido.")
+            print("[VAL_CHAIN_ERRO] Bloco GÃªnese invÃ¡lido.")
             return False
 
         for idx in range(1, len(chain)):
@@ -497,10 +500,10 @@ class Blockchain:
             # PoW
             block_declared_difficulty = curr.get('difficulty', DIFFICULTY)
             if not self.valid_proof(prev['proof'], curr['proof'], block_declared_difficulty):
-                print(f"[VAL_CHAIN_ERRO] Proof of Work inválido no bloco {curr['index']}.")
+                print(f"[VAL_CHAIN_ERRO] Proof of Work invÃ¡lido no bloco {curr['index']}.")
                 return False
 
-            # 🔥 PROTOCOL VALUE COM TOLERÂNCIA
+            # ðŸ”¥ PROTOCOL VALUE COM TOLERÃ‚NCIA
             expected_protocol_value = float(self.calculate_protocol_value_for_block(
                 curr['index'],
                 block_declared_difficulty
@@ -512,15 +515,15 @@ class Blockchain:
                 peer_protocol_value = 0.0
 
             if abs(peer_protocol_value - expected_protocol_value) > 1e-6:
-                print(f"[VAL_CHAIN_ERRO] Protocol Value inválido no bloco {curr['index']}. "
+                print(f"[VAL_CHAIN_ERRO] Protocol Value invÃ¡lido no bloco {curr['index']}. "
                       f"Esperado: {expected_protocol_value}, Obtido: {peer_protocol_value}")
                 return False
 
-            # Validação das transações
+            # ValidaÃ§Ã£o das transaÃ§Ãµes
             for tx in curr.get('transactions', []):
                 if tx['sender'] == '0':
                     if tx['recipient'] != curr['miner']:
-                        print(f"[VAL_CHAIN_ERRO] TX de recompensa inválida no bloco {curr['index']}.")
+                        print(f"[VAL_CHAIN_ERRO] TX de recompensa invÃ¡lida no bloco {curr['index']}.")
                         return False
 
                     expected_reward = self._get_mining_reward(curr['index'])
@@ -540,7 +543,7 @@ class Blockchain:
 
                     derived_address = hashlib.sha256(bytes.fromhex(pk)).hexdigest()[:40]
                     if derived_address != tx['sender']:
-                        print(f"[VAL_CHAIN_ERRO] Endereço inválido na TX {tx.get('id', '<no-id>')}.")
+                        print(f"[VAL_CHAIN_ERRO] EndereÃ§o invÃ¡lido na TX {tx.get('id', '<no-id>')}.")
                         return False
 
                     amount_to_verify = f"{float(tx['amount']):.8f}"
@@ -558,7 +561,7 @@ class Blockchain:
                     vk.verify_digest(bytes.fromhex(tx['signature']), hashlib.sha256(message).digest())
 
                 except BadSignatureError:
-                    print(f"[VAL_CHAIN_ERRO] Assinatura inválida na TX {tx.get('id', '<no-id>')}.")
+                    print(f"[VAL_CHAIN_ERRO] Assinatura invÃ¡lida na TX {tx.get('id', '<no-id>')}.")
                     return False
                 except Exception as e:
                     print(f"[VAL_CHAIN_ERRO] Erro na TX {tx.get('id', '<no-id>')}: {e}")
@@ -569,25 +572,25 @@ class Blockchain:
 
     def _calculate_difficulty_for_index(self, target_block_index):
         """
-        Calcula a dificuldade esperada para um dado índice de bloco.
+        Calcula a dificuldade esperada para um dado Ã­ndice de bloco.
         Implementa o ajuste de dificuldade do Bitcoin.
         """
         if target_block_index <= self.ADJUST_INTERVAL:
             return DIFFICULTY
 
-        # Se a cadeia ainda não tem blocos suficientes para o intervalo de ajuste,
-        # usa a dificuldade do último bloco ou a dificuldade padrão.
+        # Se a cadeia ainda nÃ£o tem blocos suficientes para o intervalo de ajuste,
+        # usa a dificuldade do Ãºltimo bloco ou a dificuldade padrÃ£o.
         if len(self.chain) < self.ADJUST_INTERVAL:
             return self.chain[-1].get('difficulty', DIFFICULTY) if self.chain else DIFFICULTY
 
-        # Índices dos blocos que definem a janela de tempo para o cálculo da dificuldade
+        # Ãndices dos blocos que definem a janela de tempo para o cÃ¡lculo da dificuldade
         start_block_for_calc_index = len(self.chain) - self.ADJUST_INTERVAL
         end_block_for_calc_index = len(self.chain) - 1
 
-        # Garantir que os índices estão dentro dos limites da cadeia existente
+        # Garantir que os Ã­ndices estÃ£o dentro dos limites da cadeia existente
         if start_block_for_calc_index < 0 or end_block_for_calc_index >= len(self.chain):
             # Isso pode acontecer se a cadeia for muito curta para o intervalo de ajuste
-            # Neste caso, usamos a dificuldade do último bloco ou a dificuldade padrão.
+            # Neste caso, usamos a dificuldade do Ãºltimo bloco ou a dificuldade padrÃ£o.
             return self.chain[-1].get('difficulty', DIFFICULTY) if self.chain else DIFFICULTY
 
         start_block_for_calc = self.chain[start_block_for_calc_index]
@@ -609,7 +612,7 @@ class Blockchain:
         elif actual_window_time > expected_time * 2 and new_difficulty > 1:
             new_difficulty -= 1
         
-        return max(1, new_difficulty) # Dificuldade mínima é 1
+        return max(1, new_difficulty) # Dificuldade mÃ­nima Ã© 1
 
     def get_total_difficulty(self, chain_to_check):
         """Calcula a dificuldade acumulada de uma cadeia."""
@@ -621,10 +624,10 @@ class Blockchain:
     def resolve_conflicts(self):
         """
         Implementa o algoritmo de consenso para resolver conflitos na cadeia.
-        Substitui a cadeia local pela mais longa e válida da rede.
+        Substitui a cadeia local pela mais longa e vÃ¡lida da rede.
         """
-        global known_nodes # Acessa a variável global known_nodes
-        neighbors = list(known_nodes) # Cria uma cópia para iterar
+        global known_nodes # Acessa a variÃ¡vel global known_nodes
+        neighbors = list(known_nodes) # Cria uma cÃ³pia para iterar
         new_chain = None
         current_total_difficulty = self.get_total_difficulty(self.chain)
 
@@ -634,7 +637,7 @@ class Blockchain:
 
         for node_url in neighbors:
             if node_url == meu_url:
-                continue # Não tentar resolver conflito consigo mesmo
+                continue # NÃ£o tentar resolver conflito consigo mesmo
             try:
                 print(f"[CONSENSO] Buscando cadeia de {node_url}...")
                 response = requests.get(f"{node_url}/chain", timeout=10)
@@ -643,7 +646,7 @@ class Blockchain:
                     peer_chain = data.get("chain")
 
                     if not peer_chain:
-                        print(f"[CONSENSO] Resposta malformada (sem 'chain') de {node_url}. Marcando peer para remoção.")
+                        print(f"[CONSENSO] Resposta malformada (sem 'chain') de {node_url}. Marcando peer para remoÃ§Ã£o.")
                         peers_to_remove_during_conflict_resolution.add(node_url)
                         continue
 
@@ -655,29 +658,29 @@ class Blockchain:
                     if peer_total_difficulty > current_total_difficulty and self.valid_chain(peer_chain):
                         current_total_difficulty = peer_total_difficulty
                         new_chain = peer_chain
-                        print(f"[CONSENSO] ✔ Cadeia mais difícil e válida encontrada em {node_url} (Dificuldade: {peer_total_difficulty})")
+                        print(f"[CONSENSO] âœ” Cadeia mais difÃ­cil e vÃ¡lida encontrada em {node_url} (Dificuldade: {peer_total_difficulty})")
                     else:
-                        print(f"[CONSENSO] ✘ Cadeia de {node_url} (Dificuldade: {peer_total_difficulty}) não é mais difícil ou não é válida.")
+                        print(f"[CONSENSO] âœ˜ Cadeia de {node_url} (Dificuldade: {peer_total_difficulty}) nÃ£o Ã© mais difÃ­cil ou nÃ£o Ã© vÃ¡lida.")
                 else:
-                    print(f"[CONSENSO] Resposta inválida de {node_url}: Status {response.status_code}. Marcando peer para remoção.")
+                    print(f"[CONSENSO] Resposta invÃ¡lida de {node_url}: Status {response.status_code}. Marcando peer para remoÃ§Ã£o.")
                     peers_to_remove_during_conflict_resolution.add(node_url)
             except requests.exceptions.RequestException as e:
-                print(f"[CONSENSO] Erro ao buscar cadeia de {node_url}: {e}. Marcando peer para remoção.")
+                print(f"[CONSENSO] Erro ao buscar cadeia de {node_url}: {e}. Marcando peer para remoÃ§Ã£o.")
                 peers_to_remove_during_conflict_resolution.add(node_url)
             except Exception as e:
-                print(f"[CONSENSO] Erro inesperado ao processar cadeia de {node_url}: {e}. Marcando peer para remoção.")
+                print(f"[CONSENSO] Erro inesperado ao processar cadeia de {node_url}: {e}. Marcando peer para remoÃ§Ã£o.")
                 peers_to_remove_during_conflict_resolution.add(node_url)
 
-        # Remove peers problemáticos APÓS a iteração
+        # Remove peers problemÃ¡ticos APÃ“S a iteraÃ§Ã£o
         if peers_to_remove_during_conflict_resolution:
             for peer in peers_to_remove_during_conflict_resolution:
-                if peer not in SEED_NODES: # Não remove nós semente automaticamente
+                if peer not in SEED_NODES: # NÃ£o remove nÃ³s semente automaticamente
                     known_nodes.discard(peer)
-                    print(f"[CONSENSO] Removido peer problemático: {peer}")
+                    print(f"[CONSENSO] Removido peer problemÃ¡tico: {peer}")
             salvar_peers(known_nodes)
 
         if new_chain:
-            # Identifica transações da cadeia antiga que não estão na nova cadeia
+            # Identifica transaÃ§Ãµes da cadeia antiga que nÃ£o estÃ£o na nova cadeia
             old_chain_tx_ids = set()
             for block in self.chain:
                 for tx in block.get('transactions', []):
@@ -689,18 +692,18 @@ class Blockchain:
                     new_chain_tx_ids.add(tx['id'])
             
             re_add_txs = []
-            # Adiciona transações da cadeia antiga que não foram incluídas na nova cadeia
+            # Adiciona transaÃ§Ãµes da cadeia antiga que nÃ£o foram incluÃ­das na nova cadeia
             for block in self.chain:
                 for tx in block.get('transactions', []):
                     if tx['id'] not in new_chain_tx_ids and tx['sender'] != '0': # Ignora TXs de recompensa
                         re_add_txs.append(tx)
             
-            # Adiciona transações pendentes atuais que não foram incluídas na nova cadeia
+            # Adiciona transaÃ§Ãµes pendentes atuais que nÃ£o foram incluÃ­das na nova cadeia
             for tx in self.current_transactions:
                 if tx['id'] not in new_chain_tx_ids:
                     re_add_txs.append(tx)
 
-            # Limpa as transações pendentes e as re-adiciona (evitando duplicatas)
+            # Limpa as transaÃ§Ãµes pendentes e as re-adiciona (evitando duplicatas)
             self.current_transactions = []
             for tx in re_add_txs:
                 temp_tx_for_duplicate_check = {
@@ -715,10 +718,10 @@ class Blockchain:
             
             self.chain = new_chain
             self._rebuild_db_from_chain()
-            print(f"[CONSENSO] ✅ Cadeia substituída com sucesso pela mais difícil e válida (Dificuldade: {current_total_difficulty}). {len(re_add_txs)} transações re-adicionadas à fila pendente.")
+            print(f"[CONSENSO] âœ… Cadeia substituÃ­da com sucesso pela mais difÃ­cil e vÃ¡lida (Dificuldade: {current_total_difficulty}). {len(re_add_txs)} transaÃ§Ãµes re-adicionadas Ã  fila pendente.")
             return True
 
-        print("[CONSENSO] 🔒 Cadeia local continua sendo a mais difícil ou nenhuma cadeia mais difícil/válida foi encontrada.")
+        print("[CONSENSO] ðŸ”’ Cadeia local continua sendo a mais difÃ­cil ou nenhuma cadeia mais difÃ­cil/vÃ¡lida foi encontrada.")
         return False
 
     def _rebuild_db_from_chain(self):
@@ -762,7 +765,7 @@ class Blockchain:
 
 
     def balance(self, address):
-        """Calcula o saldo de um endereço, incluindo transações pendentes."""
+        """Calcula o saldo de um endereÃ§o, incluindo transaÃ§Ãµes pendentes."""
         bal = 0.0
         for block in self.chain:
             for t in block['transactions']:
@@ -778,30 +781,35 @@ class Blockchain:
                 bal += float(t['amount'])
         return bal
 
-# --- Funções de Criptografia e Carteira ---
+# --- FunÃ§Ãµes de Criptografia e Carteira ---
 def gerar_endereco(public_key_hex):
-    """Gera um endereço de carteira a partir de uma chave pública hexadecimal."""
+    """Gera um endereÃ§o de carteira a partir de uma chave pÃºblica hexadecimal."""
     try:
         if isinstance(public_key_hex, str) and public_key_hex.startswith("04"):
             public_key_hex = public_key_hex[2:]
         public_key_bytes = bytes.fromhex(public_key_hex)
         return hashlib.sha256(public_key_bytes).hexdigest()[:40]
     except ValueError as e:
-        print(f"[ERRO] Falha ao gerar endereço: {e}")
+        print(f"[ERRO] Falha ao gerar endereÃ§o: {e}")
         return None
         
 @app.route('/coin/value', methods=['GET'])
 def coin_value_api():
+    value = blockchain.get_protocol_price()
+    # display com 12 casas â€” legÃ­vel e mostra valores muito pequenos
+    display = f"{value:.2f}"
     return jsonify({
         "coin": COIN_SYMBOL,
-        "protocol_value": blockchain.get_protocol_price(),  # ← CONSENSO
+        "protocol_value": value,            # nÃºmero (float)
+        "protocol_value_display": display,  # string legÃ­vel com 12 casas
         "unit": "compute-cost-index"
     }), 200
 
 
+
 def sign_transaction(private_key_hex, tx_data):
     """
-    Assina uma transação com a chave privada ECDSA (SECP256k1).
+    Assina uma transaÃ§Ã£o com a chave privada ECDSA (SECP256k1).
     tx_data deve ter: 'sender', 'recipient', 'amount' (string), 'fee' (string).
     Retorna a assinatura em hex.
     """
@@ -832,7 +840,7 @@ def create_wallet():
     address = gerar_endereco(public_key_hex)
 
     if address is None:
-        print("[ERRO] Falha ao criar carteira: Endereço não pôde ser gerado.")
+        print("[ERRO] Falha ao criar carteira: EndereÃ§o nÃ£o pÃ´de ser gerado.")
         return None
 
     return {
@@ -850,7 +858,7 @@ def load_wallet_file(filepath):
                 if 'public_key' in wallet_data:
                     derived_addr_check = gerar_endereco(wallet_data['public_key'])
                     if derived_addr_check and derived_addr_check != wallet_data.get('address'):
-                        print(f"[WALLET] Endereço na carteira desatualizado. Atualizando de {wallet_data.get('address')} para {derived_addr_check}")
+                        print(f"[WALLET] EndereÃ§o na carteira desatualizado. Atualizando de {wallet_data.get('address')} para {derived_addr_check}")
                         wallet_data['address'] = derived_addr_check
                         with open(filepath, "w") as fw:
                             json.dump(wallet_data, fw, indent=4)
@@ -869,7 +877,7 @@ def save_wallet_file(wallet_data, filepath):
     except Exception as e:
         print(f"[ERRO] Falha ao salvar carteira em {filepath}: {e}")
 
-# --- Flask Endpoints (do nó) ---
+# --- Flask Endpoints (do nÃ³) ---
 @app.route('/', methods=['GET'])
 def index_web():
     return "Kert-One Blockchain Node is running!"
@@ -893,20 +901,20 @@ def chain_api():
 @app.route('/nodes/register', methods=['POST'])
 def register_nodes_api():
     """
-    Registra um novo nó na lista de peers conhecidos.
-    Espera a URL completa do nó no payload.
+    Registra um novo nÃ³ na lista de peers conhecidos.
+    Espera a URL completa do nÃ³ no payload.
     """
     data = request.get_json()
     new_node_url = data.get('url') # Agora espera a URL completa
 
     if not new_node_url:
-        print(f"[ERRO 400] URL do nó ausente na requisição de registro.")
-        return jsonify({"message": "URL do nó inválida/ausente."}), 400
+        print(f"[ERRO 400] URL do nÃ³ ausente na requisiÃ§Ã£o de registro.")
+        return jsonify({"message": "URL do nÃ³ invÃ¡lida/ausente."}), 400
 
-    # Validação básica da URL
+    # ValidaÃ§Ã£o bÃ¡sica da URL
     if not (new_node_url.startswith('http://') or new_node_url.startswith('https://')):
-        print(f"[ERRO 400] URL do nó inválida: {new_node_url}. Deve começar com http:// ou https://")
-        return jsonify({"message": "URL do nó inválida. Deve começar com http:// ou https://."}), 400
+        print(f"[ERRO 400] URL do nÃ³ invÃ¡lida: {new_node_url}. Deve comeÃ§ar com http:// ou https://")
+        return jsonify({"message": "URL do nÃ³ invÃ¡lida. Deve comeÃ§ar com http:// ou https://."}), 400
 
     if new_node_url != meu_url:
         if new_node_url not in known_nodes:
@@ -914,9 +922,9 @@ def register_nodes_api():
             salvar_peers(known_nodes)
             print(f"[INFO] Peer {new_node_url} registrado.")
         else:
-            print(f"[INFO] Peer {new_node_url} já estava registrado.")
+            print(f"[INFO] Peer {new_node_url} jÃ¡ estava registrado.")
     else:
-        print(f"[INFO] Recebi meu próprio registro: {new_node_url}. Ignorando.")
+        print(f"[INFO] Recebi meu prÃ³prio registro: {new_node_url}. Ignorando.")
 
     return jsonify({
         "message": f"Peer {new_node_url} registrado ou atualizado.",
@@ -931,9 +939,9 @@ def get_nodes_api():
 def resolve_api():
     replaced = blockchain.resolve_conflicts()
     if replaced:
-        response = {'message': 'Nossa cadeia foi substituída pela mais longa e válida.'}
+        response = {'message': 'Nossa cadeia foi substituÃ­da pela mais longa e vÃ¡lida.'}
     else:
-        response = {'message': 'Nossa cadeia é a mais longa ou nenhuma cadeia mais longa/válida foi encontrada.'}
+        response = {'message': 'Nossa cadeia Ã© a mais longa ou nenhuma cadeia mais longa/vÃ¡lida foi encontrada.'}
     return jsonify(response), 200
 
 @app.route('/balance/<addr>', methods=['GET'])
@@ -947,29 +955,29 @@ def balance_api(addr):
 
 @app.route('/transactions/pending', methods=['GET'])
 def pending_transactions():
-    """Retorna a lista de transações pendentes."""
+    """Retorna a lista de transaÃ§Ãµes pendentes."""
     return jsonify(blockchain.current_transactions), 200
 
 @app.route('/tx/new', methods=['POST'])
 def new_transaction_api():
-    """Recebe uma nova transação do cliente e a adiciona à fila pendente."""
+    """Recebe uma nova transaÃ§Ã£o do cliente e a adiciona Ã  fila pendente."""
     raw_values = None
     try:
         raw_values = request.get_json(silent=True)
     except Exception as e:
-        print(f"DEBUG_SERVER: ERRO - Exceção durante o parsing JSON: {e}")
+        print(f"DEBUG_SERVER: ERRO - ExceÃ§Ã£o durante o parsing JSON: {e}")
     
     if raw_values is None:
         print(f"DEBUG_SERVER: ERRO - request.get_json() retornou None. Verifique o Content-Type ou a validade do JSON.")
-        return jsonify({'message': 'Erro: Não foi possível parsear o JSON da requisição. Verifique o Content-Type ou a validade do JSON.'}), 400
+        return jsonify({'message': 'Erro: NÃ£o foi possÃ­vel parsear o JSON da requisiÃ§Ã£o. Verifique o Content-Type ou a validade do JSON.'}), 400
     
     values = raw_values
 
     required = ['id', 'sender', 'recipient', 'amount', 'fee', 'public_key', 'signature']
     if not all(k in values for k in required):
         missing = [k for k in required if k not in values]
-        print(f"[ERRO 400] Valores ausentes na transação: {missing}")
-        return jsonify({'message': f'Valores ausentes na requisição: {", ".join(missing)}'}), 400
+        print(f"[ERRO 400] Valores ausentes na transaÃ§Ã£o: {missing}")
+        return jsonify({'message': f'Valores ausentes na requisiÃ§Ã£o: {", ".join(missing)}'}), 400
 
     try:
         amount_float = float(values['amount'])
@@ -978,8 +986,8 @@ def new_transaction_api():
         fee_str_formatted = f"{fee_float:.8f}"
 
         if fee_float <= 0:
-            print(f"[ERRO 400] Taxa de transação inválida: {fee_float}. A taxa deve ser maior que 0.")
-            return jsonify({'message': 'Taxa de transação inválida. A taxa deve ser maior que 0.'}), 400
+            print(f"[ERRO 400] Taxa de transaÃ§Ã£o invÃ¡lida: {fee_float}. A taxa deve ser maior que 0.")
+            return jsonify({'message': 'Taxa de transaÃ§Ã£o invÃ¡lida. A taxa deve ser maior que 0.'}), 400
 
         transaction = {
             'id': values['id'],
@@ -992,11 +1000,11 @@ def new_transaction_api():
             'timestamp': values.get('timestamp', time.time()) # Usar timestamp fornecido ou atual
         }
     except ValueError as e:
-        print(f"[ERRO 400] Erro de conversão de tipo na transação: {e}")
-        return jsonify({'message': f'Erro ao processar dados numéricos da transação: {e}'}), 400
+        print(f"[ERRO 400] Erro de conversÃ£o de tipo na transaÃ§Ã£o: {e}")
+        return jsonify({'message': f'Erro ao processar dados numÃ©ricos da transaÃ§Ã£o: {e}'}), 400
     except Exception as e:
-        print(f"[ERRO 400] Erro inesperado ao construir transação: {e}")
-        return jsonify({'message': f'Erro ao processar dados da transação: {e}'}), 400
+        print(f"[ERRO 400] Erro inesperado ao construir transaÃ§Ã£o: {e}")
+        return jsonify({'message': f'Erro ao processar dados da transaÃ§Ã£o: {e}'}), 400
 
     temp_tx_for_duplicate_check = {
         'sender': transaction['sender'],
@@ -1006,8 +1014,8 @@ def new_transaction_api():
         'id': transaction.get('id')
     }
     if blockchain.is_duplicate_transaction(temp_tx_for_duplicate_check):
-        print(f"[AVISO] Transação duplicada detectada para {transaction['sender']} -> {transaction['recipient']}. Ignorando.")
-        return jsonify({'message': 'Transação duplicada detectada. Não adicionada novamente.'}), 200
+        print(f"[AVISO] TransaÃ§Ã£o duplicada detectada para {transaction['sender']} -> {transaction['recipient']}. Ignorando.")
+        return jsonify({'message': 'TransaÃ§Ã£o duplicada detectada. NÃ£o adicionada novamente.'}), 200
 
     try:
         pk_for_address_derivation = transaction['public_key']
@@ -1016,28 +1024,28 @@ def new_transaction_api():
         
         derived_address = hashlib.sha256(bytes.fromhex(pk_for_address_derivation)).hexdigest()[:40] 
         if derived_address != transaction['sender']:
-            print(f"[ERRO 400] Assinatura inválida: Endereço do remetente ({transaction['sender']}) não corresponde à chave pública fornecida ({derived_address}).")
-            return jsonify({'message': 'Assinatura inválida: Endereço do remetente não corresponde à chave pública fornecida'}), 400
+            print(f"[ERRO 400] Assinatura invÃ¡lida: EndereÃ§o do remetente ({transaction['sender']}) nÃ£o corresponde Ã  chave pÃºblica fornecida ({derived_address}).")
+            return jsonify({'message': 'Assinatura invÃ¡lida: EndereÃ§o do remetente nÃ£o corresponde Ã  chave pÃºblica fornecida'}), 400
 
         if not verify_signature(transaction['public_key'], transaction['signature'], transaction):
-            print(f"[ERRO 400] Assinatura inválida ou chave pública malformada para TX ID: {transaction.get('id')}")
-            return jsonify({'message': 'Assinatura inválida ou chave pública malformada: Falha na verificação da assinatura'}), 400
+            print(f"[ERRO 400] Assinatura invÃ¡lida ou chave pÃºblica malformada para TX ID: {transaction.get('id')}")
+            return jsonify({'message': 'Assinatura invÃ¡lida ou chave pÃºblica malformada: Falha na verificaÃ§Ã£o da assinatura'}), 400
             
     except Exception as e:
-        print(f"[ERRO 400] Erro inesperado na validação da assinatura: {e}. TX ID: {transaction.get('id')}")
-        return jsonify({'message': f'Erro inesperado na validação da transação: {e}'}), 400
+        print(f"[ERRO 400] Erro inesperado na validaÃ§Ã£o da assinatura: {e}. TX ID: {transaction.get('id')}")
+        return jsonify({'message': f'Erro inesperado na validaÃ§Ã£o da transaÃ§Ã£o: {e}'}), 400
 
     current_balance = blockchain.balance(transaction['sender'])
     required_amount = float(transaction['amount']) + float(transaction['fee'])
     if current_balance < required_amount:
-        print(f"[ERRO 400] Saldo insuficiente para {transaction['sender']}: Necessário {required_amount}, Disponível {current_balance}. TX ID: {transaction.get('id')}")
-        return jsonify({'message': f'Saldo insuficiente para a transação. Saldo atual: {current_balance}, Necessário: {required_amount}'}), 400
+        print(f"[ERRO 400] Saldo insuficiente para {transaction['sender']}: NecessÃ¡rio {required_amount}, DisponÃ­vel {current_balance}. TX ID: {transaction.get('id')}")
+        return jsonify({'message': f'Saldo insuficiente para a transaÃ§Ã£o. Saldo atual: {current_balance}, NecessÃ¡rio: {required_amount}'}), 400
 
     blockchain.current_transactions.append(transaction)
     
     broadcast_tx_to_peers(transaction)
 
-    response = {'message': f'Transação {transaction["id"]} adicionada à fila de transações pendentes.',
+    response = {'message': f'TransaÃ§Ã£o {transaction["id"]} adicionada Ã  fila de transaÃ§Ãµes pendentes.',
                 'coin_name': COIN_NAME,
                 'coin_symbol': COIN_SYMBOL,
                 'transaction_id': transaction['id']}
@@ -1045,39 +1053,39 @@ def new_transaction_api():
 
 
 def broadcast_tx_to_peers(tx):
-    """Envia uma transação para todos os peers conhecidos."""
-    print(f"[Broadcast TX] Enviando transação {tx.get('id')} para {len(known_nodes)} peers.")
+    """Envia uma transaÃ§Ã£o para todos os peers conhecidos."""
+    print(f"[Broadcast TX] Enviando transaÃ§Ã£o {tx.get('id')} para {len(known_nodes)} peers.")
     peers_to_remove = set()
     for peer in known_nodes.copy():
         if peer == meu_url: continue
         try:
             requests.post(f"{peer}/tx/receive", json=tx, timeout=3)
         except requests.exceptions.RequestException as e:
-            print(f"[Broadcast TX] Erro ao enviar TX para {peer}: {e}. Marcando peer para remoção (se não for seed).")
+            print(f"[Broadcast TX] Erro ao enviar TX para {peer}: {e}. Marcando peer para remoÃ§Ã£o (se nÃ£o for seed).")
             if peer not in SEED_NODES:
                 peers_to_remove.add(peer)
         except Exception as e:
-            print(f"[Broadcast TX] Erro inesperado ao enviar TX para {peer}: {e}. Marcando peer para remoção (se não for seed).")
+            print(f"[Broadcast TX] Erro inesperado ao enviar TX para {peer}: {e}. Marcando peer para remoÃ§Ã£o (se nÃ£o for seed).")
             if peer not in SEED_NODES:
                 peers_to_remove.add(peer)
     
     if peers_to_remove:
         known_nodes.difference_update(peers_to_remove)
         salvar_peers(known_nodes)
-        print(f"[Broadcast TX] Removidos {len(peers_to_remove)} peers problemáticos.")
+        print(f"[Broadcast TX] Removidos {len(peers_to_remove)} peers problemÃ¡ticos.")
 
 @app.route('/tx/receive', methods=['POST'])
 def receive_transaction_api():
-    """Recebe uma transação de outro nó e a adiciona à fila pendente após validação."""
+    """Recebe uma transaÃ§Ã£o de outro nÃ³ e a adiciona Ã  fila pendente apÃ³s validaÃ§Ã£o."""
     tx_data = request.get_json()
     if not tx_data:
-        print("[RECEIVE_TX ERROR] Nenhum dado de transação recebido.")
-        return jsonify({"message": "Nenhum dado de transação recebido."}), 400
+        print("[RECEIVE_TX ERROR] Nenhum dado de transaÃ§Ã£o recebido.")
+        return jsonify({"message": "Nenhum dado de transaÃ§Ã£o recebido."}), 400
 
     required = ['id', 'sender', 'recipient', 'amount', 'fee', 'public_key', 'signature']
     if not all(k in tx_data for k in required):
-        print(f"[RECEIVE_TX ERROR] Dados de transação incompletos: {tx_data}")
-        return jsonify({'message': 'Dados de transação incompletos.'}), 400
+        print(f"[RECEIVE_TX ERROR] Dados de transaÃ§Ã£o incompletos: {tx_data}")
+        return jsonify({'message': 'Dados de transaÃ§Ã£o incompletos.'}), 400
 
     try:
         amount_float = float(tx_data['amount'])
@@ -1086,8 +1094,8 @@ def receive_transaction_api():
         fee_str_formatted = f"{fee_float:.8f}"
 
         if fee_float <= 0:
-            print(f"[RECEIVE TX ERROR] Taxa de transação inválida: {fee_float}. A taxa deve ser maior que 0.")
-            return jsonify({'message': 'Transação inválida: A taxa deve ser maior que 0.'}), 400
+            print(f"[RECEIVE TX ERROR] Taxa de transaÃ§Ã£o invÃ¡lida: {fee_float}. A taxa deve ser maior que 0.")
+            return jsonify({'message': 'TransaÃ§Ã£o invÃ¡lida: A taxa deve ser maior que 0.'}), 400
 
         temp_tx_for_duplicate_check = {
             'sender': tx_data['sender'],
@@ -1097,8 +1105,8 @@ def receive_transaction_api():
             'id': tx_data.get('id')
         }
         if blockchain.is_duplicate_transaction(temp_tx_for_duplicate_check):
-            print(f"[RECEIVE TX] Transação {tx_data.get('id')} já existe na fila pendente ou minerada. Ignorando.")
-            return jsonify({'message': 'Transação já conhecida.'}), 200
+            print(f"[RECEIVE TX] TransaÃ§Ã£o {tx_data.get('id')} jÃ¡ existe na fila pendente ou minerada. Ignorando.")
+            return jsonify({'message': 'TransaÃ§Ã£o jÃ¡ conhecida.'}), 200
 
         tx_for_verification = {
             'id': tx_data['id'],
@@ -1112,29 +1120,29 @@ def receive_transaction_api():
         }
 
         if not verify_signature(tx_for_verification['public_key'], tx_for_verification['signature'], tx_for_verification):
-            print(f"[RECEIVE TX ERROR] TX {tx_data.get('id')}: Assinatura inválida ou chave pública malformada.")
-            return jsonify({'message': 'Transação inválida: Assinatura inválida ou chave pública malformada.'}), 400
+            print(f"[RECEIVE TX ERROR] TX {tx_data.get('id')}: Assinatura invÃ¡lida ou chave pÃºblica malformada.")
+            return jsonify({'message': 'TransaÃ§Ã£o invÃ¡lida: Assinatura invÃ¡lida ou chave pÃºblica malformada.'}), 400
 
         current_balance = blockchain.balance(tx_data['sender'])
         required_amount = float(tx_data['amount']) + float(tx_data['fee'])
         if current_balance < required_amount:
-            print(f"[RECEIVE TX ERROR] TX {tx_data.get('id')}: Saldo insuficiente para {tx_data['sender']}. Necessário: {required_amount}, Disponível: {current_balance}")
-            return jsonify({'message': 'Transação inválida: Saldo insuficiente.'}), 400
+            print(f"[RECEIVE TX ERROR] TX {tx_data.get('id')}: Saldo insuficiente para {tx_data['sender']}. NecessÃ¡rio: {required_amount}, DisponÃ­vel: {current_balance}")
+            return jsonify({'message': 'TransaÃ§Ã£o invÃ¡lida: Saldo insuficiente.'}), 400
 
         blockchain.current_transactions.append(tx_for_verification)
-        print(f"[RECEIVE TX] Transação {tx_data.get('id')} recebida e adicionada à fila pendente.")
-        return jsonify({"message": "Transação recebida e adicionada com sucesso."}), 200
+        print(f"[RECEIVE TX] TransaÃ§Ã£o {tx_data.get('id')} recebida e adicionada Ã  fila pendente.")
+        return jsonify({"message": "TransaÃ§Ã£o recebida e adicionada com sucesso."}), 200
 
     except ValueError as e:
-        print(f"[RECEIVE TX ERROR] Erro de conversão de tipo ao processar TX {tx_data.get('id')}: {e}")
-        return jsonify({'message': f'Erro ao processar dados numéricos da transação: {e}'}), 400
+        print(f"[RECEIVE TX ERROR] Erro de conversÃ£o de tipo ao processar TX {tx_data.get('id')}: {e}")
+        return jsonify({'message': f'Erro ao processar dados numÃ©ricos da transaÃ§Ã£o: {e}'}), 400
     except Exception as e:
         print(f"[RECEIVE TX ERROR] Erro inesperado ao processar TX {tx_data.get('id')}: {e}")
-        return jsonify({'message': f'Erro interno ao processar transação: {e}'}), 500
+        return jsonify({'message': f'Erro interno ao processar transaÃ§Ã£o: {e}'}), 500
         
 def verify_signature(public_key_hex, signature_hex, tx_data):
     """
-    Verifica a assinatura de uma transação.
+    Verifica a assinatura de uma transaÃ§Ã£o.
     tx_data deve conter 'sender', 'recipient', 'amount', 'fee'.
     'amount' e 'fee' devem ser strings formatadas com 8 casas decimais.
     """
@@ -1142,12 +1150,12 @@ def verify_signature(public_key_hex, signature_hex, tx_data):
         if not public_key_hex or not signature_hex:
             return False
 
-        # Normaliza chave pública (remove prefixo '04' se presente)
+        # Normaliza chave pÃºblica (remove prefixo '04' se presente)
         pk_hex = public_key_hex
         if isinstance(pk_hex, str) and pk_hex.startswith("04") and len(pk_hex) == 130:
             pk_hex = pk_hex[2:]
 
-        # Garantir que amount e fee são strings formatadas para a verificação
+        # Garantir que amount e fee sÃ£o strings formatadas para a verificaÃ§Ã£o
         amount_to_verify = f"{float(tx_data['amount']):.8f}"
         fee_to_verify = f"{float(tx_data['fee']):.8f}"
 
@@ -1167,18 +1175,18 @@ def verify_signature(public_key_hex, signature_hex, tx_data):
         vk.verify_digest(signature_bytes, message_hash_bytes)
         return True
     except BadSignatureError:
-        print("Falha na verificação da assinatura: BadSignatureError!")
+        print("Falha na verificaÃ§Ã£o da assinatura: BadSignatureError!")
         return False
     except ValueError as ve:
-        print(f"Falha na verificação da assinatura: ValueError (e.g., bad hex string or malformed key): {ve}")
+        print(f"Falha na verificaÃ§Ã£o da assinatura: ValueError (e.g., bad hex string or malformed key): {ve}")
         return False
     except Exception as e:
-        print(f"Erro durante a verificação da assinatura: {e}")
+        print(f"Erro durante a verificaÃ§Ã£o da assinatura: {e}")
         return False
         
 @app.route('/blocks/receive', methods=['POST'])
 def receive_block_api():
-    """Recebe um bloco de outro nó e tenta adicioná-lo à cadeia local."""
+    """Recebe um bloco de outro nÃ³ e tenta adicionÃ¡-lo Ã  cadeia local."""
     block_data = request.get_json()
 
     if not block_data:
@@ -1191,50 +1199,50 @@ def receive_block_api():
     if not all(k in block_data for k in required_keys):
         return jsonify({"message": "Dados de bloco incompletos."}), 400
 
-    # Força tipos numéricos para evitar comparações falhas
+    # ForÃ§a tipos numÃ©ricos para evitar comparaÃ§Ãµes falhas
     try:
         block_data['index'] = int(block_data['index'])
         block_data['difficulty'] = int(block_data['difficulty'])
         block_data['proof'] = int(block_data['proof'])
         block_data['timestamp'] = float(block_data['timestamp'])
     except Exception:
-        return jsonify({'message': 'Tipos de dados inválidos no bloco'}), 400
+        return jsonify({'message': 'Tipos de dados invÃ¡lidos no bloco'}), 400
 
-    # 🧠 Se ainda não temos cadeia → sincroniza
+    # ðŸ§  Se ainda nÃ£o temos cadeia â†’ sincroniza
     if not blockchain.chain:
         threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
         return jsonify({'message': 'Sincronizando cadeia inicial.'}), 202
 
     last_block = blockchain.last_block()
 
-    # 🔁 Bloco antigo ou repetido
+    # ðŸ” Bloco antigo ou repetido
     if block_data['index'] <= last_block['index']:
         return jsonify({'message': 'Bloco antigo/duplicado.'}), 200
 
-    # ⏳ Bloco muito à frente → pede sync
+    # â³ Bloco muito Ã  frente â†’ pede sync
     if block_data['index'] > last_block['index'] + 1:
         threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
-        return jsonify({'message': 'Bloco à frente. Sincronizando.'}), 202
+        return jsonify({'message': 'Bloco Ã  frente. Sincronizando.'}), 202
 
-    # 🔗 Hash anterior
+    # ðŸ”— Hash anterior
     if block_data['previous_hash'] != blockchain.hash(last_block):
         threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
-        return jsonify({'message': 'Hash anterior inválido'}), 400
+        return jsonify({'message': 'Hash anterior invÃ¡lido'}), 400
 
-    # ⛏️ PoW
+    # â›ï¸ PoW
     if not blockchain.valid_proof(last_block['proof'], block_data['proof'], block_data['difficulty']):
-        return jsonify({'message': 'Proof of Work inválido'}), 400
+        return jsonify({'message': 'Proof of Work invÃ¡lido'}), 400
 
-    # 🔒 Verifica integridade do bloco recebido (se o peer enviou o campo 'hash')
+    # ðŸ”’ Verifica integridade do bloco recebido (se o peer enviou o campo 'hash')
     calculated_hash = blockchain.hash(block_data)
     if 'hash' in block_data and block_data['hash'] != calculated_hash:
-        return jsonify({'message': 'Hash do bloco inválido'}), 400
+        return jsonify({'message': 'Hash do bloco invÃ¡lido'}), 400
 
-    # ⏰ Proteção tempo futuro
+    # â° ProteÃ§Ã£o tempo futuro
     if block_data['timestamp'] > time.time() + 120:
         return jsonify({'message': 'Timestamp no futuro'}), 400
 
-    # 💰 CONSENSO ECONÔMICO (CORRIGIDO)
+    # ðŸ’° CONSENSO ECONÃ”MICO (CORRIGIDO)
     expected_value = float(blockchain.calculate_protocol_value_for_block(
         block_data['index'],
         block_data['difficulty']
@@ -1246,9 +1254,9 @@ def receive_block_api():
         peer_value = 0.0
 
     if abs(peer_value - expected_value) > 1e-6:
-        return jsonify({'message': 'Protocol Value inválido'}), 400
+        return jsonify({'message': 'Protocol Value invÃ¡lido'}), 400
 
-    # 🧾 Transações
+    # ðŸ§¾ TransaÃ§Ãµes
     for tx in block_data['transactions']:
         if tx['sender'] == '0':
             continue
@@ -1266,17 +1274,17 @@ def receive_block_api():
                 pub = pub[2:]
 
             if not verify_signature(pub, tx['signature'], tx_for_verification):
-                raise ValueError("Assinatura inválida")
+                raise ValueError("Assinatura invÃ¡lida")
 
         except Exception:
-            return jsonify({'message': 'Transação inválida'}), 400
+            return jsonify({'message': 'TransaÃ§Ã£o invÃ¡lida'}), 400
 
-    # 🔐 Validação final de cadeia (anti-fork malicioso)
+    # ðŸ” ValidaÃ§Ã£o final de cadeia (anti-fork malicioso)
     temp_chain = blockchain.chain + [block_data]
     if not blockchain.valid_chain(temp_chain):
         return jsonify({'message': 'Bloco quebra regras da cadeia'}), 400
 
-    # ✅ Bloco aceito
+    # âœ… Bloco aceito
     blockchain.chain.append(block_data)
     blockchain._save_block(block_data)
 
@@ -1293,7 +1301,7 @@ def receive_block_api():
 def check_sync_api():
     last = blockchain.last_block()
     if not last:
-        return jsonify({'message': 'Blockchain não inicializada localmente.'}), 500
+        return jsonify({'message': 'Blockchain nÃ£o inicializada localmente.'}), 500
     local_hash = blockchain.hash(last)
     return jsonify({
         'index': last['index'],
@@ -1305,42 +1313,42 @@ def check_sync_api():
 
 @app.route('/miner/set_address', methods=['POST'])
 def set_miner_address_api():
-    """Define o endereço de mineração para o nó."""
-    global miner_address_global # Usar a variável global consistente
+    """Define o endereÃ§o de mineraÃ§Ã£o para o nÃ³."""
+    global miner_address_global # Usar a variÃ¡vel global consistente
     data = request.get_json()
     address = data.get('address')
     if not address:
-        return jsonify({"message": "Endereço do minerador ausente."}), 400
+        return jsonify({"message": "EndereÃ§o do minerador ausente."}), 400
     miner_address_global = address
-    print(f"[MINER] Endereço do minerador definido para {miner_address_global}")
-    return jsonify({"message": f"Endereço do minerador definido para {miner_address_global}"}), 200
+    print(f"[MINER] EndereÃ§o do minerador definido para {miner_address_global}")
+    return jsonify({"message": f"EndereÃ§o do minerador definido para {miner_address_global}"}), 200
 
 @app.route('/mine', methods=['GET'])
 def mine_api():
-    """Inicia o processo de mineração de um novo bloco (manual)."""
+    """Inicia o processo de mineraÃ§Ã£o de um novo bloco (manual)."""
     global mining_active, miner_address_global
     if not miner_address_global:
-        return jsonify({"message": "Endereço do minerador não definido. Por favor, defina um endereço primeiro usando /miner/set_address."}), 400
+        return jsonify({"message": "EndereÃ§o do minerador nÃ£o definido. Por favor, defina um endereÃ§o primeiro usando /miner/set_address."}), 400
 
-    # Se a mineração contínua estiver ativa, não permitir mineração manual separada
+    # Se a mineraÃ§Ã£o contÃ­nua estiver ativa, nÃ£o permitir mineraÃ§Ã£o manual separada
     if mining_active:
-        return jsonify({"message": "Mineração contínua já está em andamento. Pare-a para minerar manualmente."}), 409
+        return jsonify({"message": "MineraÃ§Ã£o contÃ­nua jÃ¡ estÃ¡ em andamento. Pare-a para minerar manualmente."}), 409
 
     last_block = blockchain.last_block()
     if not last_block:
-        return jsonify({"message": "Blockchain não inicializada. Não é possível minerar."}), 500
+        return jsonify({"message": "Blockchain nÃ£o inicializada. NÃ£o Ã© possÃ­vel minerar."}), 500
 
     last_proof = last_block['proof']
     
     # Temporariamente ativar mining_active para que proof_of_work funcione
-    # e possa ser interrompido se necessário (embora esta rota não tenha um 'stop')
+    # e possa ser interrompido se necessÃ¡rio (embora esta rota nÃ£o tenha um 'stop')
     original_mining_active_state = mining_active
     mining_active = True 
     proof = blockchain.proof_of_work(last_proof)
     mining_active = original_mining_active_state # Restaurar estado
 
-    if proof == -1: # Mineração foi abortada (por chegada de bloco ou outro motivo)
-        return jsonify({"message": "Mineração abortada ou interrompida (provavelmente um bloco foi encontrado por outro nó)."}), 200
+    if proof == -1: # MineraÃ§Ã£o foi abortada (por chegada de bloco ou outro motivo)
+        return jsonify({"message": "MineraÃ§Ã£o abortada ou interrompida (provavelmente um bloco foi encontrado por outro nÃ³)."}), 200
 
     previous_hash = blockchain.hash(last_block)
     new_block = blockchain.new_block(proof, previous_hash, miner_address_global)
@@ -1359,41 +1367,41 @@ def mine_api():
 
 @app.route('/miner/start_continuous', methods=['GET'])
 def start_continuous_mining():
-    """Endpoint para iniciar a mineração contínua em um thread separado."""
+    """Endpoint para iniciar a mineraÃ§Ã£o contÃ­nua em um thread separado."""
     global mining_active, miner_thread, miner_address_global
     if mining_active:
-        return jsonify({"message": "Mineração contínua já está em execução."}), 400
+        return jsonify({"message": "MineraÃ§Ã£o contÃ­nua jÃ¡ estÃ¡ em execuÃ§Ã£o."}), 400
     
     if not miner_address_global:
-        return jsonify({"message": "Endereço do minerador não definido. Defina um endereço primeiro usando /miner/set_address."}), 400
+        return jsonify({"message": "EndereÃ§o do minerador nÃ£o definido. Defina um endereÃ§o primeiro usando /miner/set_address."}), 400
 
     mining_active = True
     miner_thread = threading.Thread(target=_continuous_mine, daemon=True)
     miner_thread.start()
-    print("[MINER] Mineração contínua iniciada.")
-    return jsonify({"message": "Mineração contínua iniciada."}), 200
+    print("[MINER] MineraÃ§Ã£o contÃ­nua iniciada.")
+    return jsonify({"message": "MineraÃ§Ã£o contÃ­nua iniciada."}), 200
 
 @app.route('/miner/stop_continuous', methods=['GET'])
 def stop_continuous_mining():
-    """Endpoint para parar a mineração contínua."""
+    """Endpoint para parar a mineraÃ§Ã£o contÃ­nua."""
     global mining_active, miner_thread
     if not mining_active:
-        return jsonify({"message": "Mineração contínua não está em execução."}), 400
+        return jsonify({"message": "MineraÃ§Ã£o contÃ­nua nÃ£o estÃ¡ em execuÃ§Ã£o."}), 400
     
     mining_active = False
-    # O thread irá parar por si só na próxima iteração do loop ou quando proof_of_work verificar `mining_active`
-    print("[MINER] Sinal para parar mineração contínua enviado.")
-    return jsonify({"message": "Sinal para parar mineração contínua enviado. Pode levar alguns segundos para parar o bloco atual."}), 200
+    # O thread irÃ¡ parar por si sÃ³ na prÃ³xima iteraÃ§Ã£o do loop ou quando proof_of_work verificar `mining_active`
+    print("[MINER] Sinal para parar mineraÃ§Ã£o contÃ­nua enviado.")
+    return jsonify({"message": "Sinal para parar mineraÃ§Ã£o contÃ­nua enviado. Pode levar alguns segundos para parar o bloco atual."}), 200
 
 def _continuous_mine():
-    """Função que executa a mineração continuamente em um thread."""
+    """FunÃ§Ã£o que executa a mineraÃ§Ã£o continuamente em um thread."""
     global mining_active, blockchain, miner_address_global
-    print("[MINER] Thread de mineração contínua iniciada.")
+    print("[MINER] Thread de mineraÃ§Ã£o contÃ­nua iniciada.")
     while mining_active:
         try:
             last_block = blockchain.last_block()
             if not last_block:
-                print("[MINER ERROR] Blockchain não inicializada para mineração contínua. Tentando novamente em 5s.")
+                print("[MINER ERROR] Blockchain nÃ£o inicializada para mineraÃ§Ã£o contÃ­nua. Tentando novamente em 5s.")
                 time.sleep(5) # Espera antes de tentar novamente
                 continue
 
@@ -1401,9 +1409,9 @@ def _continuous_mine():
             
             proof = blockchain.proof_of_work(last_proof)
 
-            if proof == -1: # Mineração foi abortada (novo bloco encontrado ou sinal para parar)
-                print("[MINER] Mineração de bloco abortada. Verificando novamente o estado.")
-                time.sleep(1) # Pequena pausa antes de tentar o próximo bloco
+            if proof == -1: # MineraÃ§Ã£o foi abortada (novo bloco encontrado ou sinal para parar)
+                print("[MINER] MineraÃ§Ã£o de bloco abortada. Verificando novamente o estado.")
+                time.sleep(1) # Pequena pausa antes de tentar o prÃ³ximo bloco
                 continue
 
             previous_hash = blockchain.hash(last_block)
@@ -1411,18 +1419,18 @@ def _continuous_mine():
             print(f"[MINER] Bloco minerado continuamente: {new_block['index']}")
 
             broadcast_block(new_block)
-            time.sleep(1) # Pequena pausa para evitar loops muito rápidos
+            time.sleep(1) # Pequena pausa para evitar loops muito rÃ¡pidos
 
         except Exception as e:
-            print(f"[MINER ERROR] Erro na mineração contínua: {e}. Parando mineração.")
-            mining_active = False # Parar a mineração em caso de erro grave
+            print(f"[MINER ERROR] Erro na mineraÃ§Ã£o contÃ­nua: {e}. Parando mineraÃ§Ã£o.")
+            mining_active = False # Parar a mineraÃ§Ã£o em caso de erro grave
             break
-    print("[MINER] Thread de mineração contínua parada.")
+    print("[MINER] Thread de mineraÃ§Ã£o contÃ­nua parada.")
 
 
-# --- Funções de Peer-to-Peer (do nó) ---
+# --- FunÃ§Ãµes de Peer-to-Peer (do nÃ³) ---
 def broadcast_block(block):
-    """Envia um bloco recém-minerado para todos os peers conhecidos."""
+    """Envia um bloco recÃ©m-minerado para todos os peers conhecidos."""
     print(f"[BROADCAST] Enviando bloco #{block['index']} para {len(known_nodes)} peers...")
     peers_to_remove = set()
     for peer in known_nodes.copy():
@@ -1430,130 +1438,130 @@ def broadcast_block(block):
         try:
             requests.post(f"{peer}/blocks/receive", json=block, timeout=5)
         except requests.exceptions.RequestException as e:
-            print(f"[BROADCAST] Erro ao enviar bloco para {peer}: {e}. Marcando peer para remoção (se não for seed).")
+            print(f"[BROADCAST] Erro ao enviar bloco para {peer}: {e}. Marcando peer para remoÃ§Ã£o (se nÃ£o for seed).")
             if peer not in SEED_NODES:
                 peers_to_remove.add(peer)
         except Exception as e:
-            print(f"[BROADCAST] Erro inesperado ao enviar bloco para {peer}: {e}. Marcando peer para remoção (se não for seed).")
+            print(f"[BROADCAST] Erro inesperado ao enviar bloco para {peer}: {e}. Marcando peer para remoÃ§Ã£o (se nÃ£o for seed).")
             if peer not in SEED_NODES:
                 peers_to_remove.add(peer)
     
     if peers_to_remove:
         known_nodes.difference_update(peers_to_remove)
         salvar_peers(known_nodes)
-        print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
+        print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemÃ¡ticos.")
 
 def discover_peers():
     """
     Descobre e registra peers na rede.
-    Prioriza a conexão com os nós semente (SEED_NODES) para iniciar a descoberta.
+    Prioriza a conexÃ£o com os nÃ³s semente (SEED_NODES) para iniciar a descoberta.
     """
     global known_nodes, meu_url
     
-    # 1. Adiciona os nós semente à lista de peers conhecidos.
+    # 1. Adiciona os nÃ³s semente Ã  lista de peers conhecidos.
     initial_known_nodes_count = len(known_nodes)
     for seed in SEED_NODES:
         if seed not in known_nodes and seed != meu_url:
             known_nodes.add(seed)
-            print(f"[DISCOVERY] Adicionando nó semente: {seed}")
+            print(f"[DISCOVERY] Adicionando nÃ³ semente: {seed}")
     
     if len(known_nodes) > initial_known_nodes_count:
-        salvar_peers(known_nodes) # Salva a lista atualizada de peers se houver novas adições
+        salvar_peers(known_nodes) # Salva a lista atualizada de peers se houver novas adiÃ§Ãµes
 
-    # 2. Itera sobre a lista de peers conhecidos (incluindo os nós semente)
-    # para descobrir novos peers e registrar o nó local.
-    peers_to_check = list(known_nodes.copy()) # Cria uma cópia para iterar
+    # 2. Itera sobre a lista de peers conhecidos (incluindo os nÃ³s semente)
+    # para descobrir novos peers e registrar o nÃ³ local.
+    peers_to_check = list(known_nodes.copy()) # Cria uma cÃ³pia para iterar
     
     peers_to_remove_during_discovery = set()
     new_peers_discovered = False
 
     for peer in peers_to_check:
         if peer == meu_url:
-            continue # Não tentar conectar a si mesmo
+            continue # NÃ£o tentar conectar a si mesmo
         try:
-            # Tenta obter a lista de nós conhecidos pelo peer
+            # Tenta obter a lista de nÃ³s conhecidos pelo peer
             print(f"[DISCOVERY] Consultando peers de {peer}...")
             r = requests.get(f"{peer}/nodes", timeout=5)
             if r.status_code == 200:
                 raw_new_peers = r.json().get('nodes', [])
                 for np in raw_new_peers:
-                    # Garante que 'np' é uma string de URL válida
+                    # Garante que 'np' Ã© uma string de URL vÃ¡lida
                     if isinstance(np, str) and (np.startswith('http://') or np.startswith('https://')):
                         if np not in known_nodes and np != meu_url:
                             known_nodes.add(np)
                             print(f"[DISCOVERY] Descoberto novo peer {np} via {peer}")
                             new_peers_discovered = True
                             
-                            # Tenta registrar o nó local com o novo peer descoberto
+                            # Tenta registrar o nÃ³ local com o novo peer descoberto
                             try:
-                                print(f"[DISCOVERY] Registrando meu nó ({meu_url}) com o novo peer {np}...")
+                                print(f"[DISCOVERY] Registrando meu nÃ³ ({meu_url}) com o novo peer {np}...")
                                 requests.post(f"{np}/nodes/register", json={'url': meu_url}, timeout=2)
                             except requests.exceptions.RequestException as e:
                                 print(f"[DISCOVERY ERROR] Falha ao registrar em {np}: {e}")
                             except Exception as e:
                                 print(f"[DISCOVERY ERROR] Erro inesperado ao registrar em {np}: {e}")
                     else:
-                        print(f"[DISCOVERY WARNING] Peer {np} de {peer} não é uma URL válida. Ignorando.")
+                        print(f"[DISCOVERY WARNING] Peer {np} de {peer} nÃ£o Ã© uma URL vÃ¡lida. Ignorando.")
 
-            # Tenta registrar o nó local com o peer atual (seja ele semente ou descoberto)
-            print(f"[DISCOVERY] Registrando meu nó ({meu_url}) com {peer}...")
+            # Tenta registrar o nÃ³ local com o peer atual (seja ele semente ou descoberto)
+            print(f"[DISCOVERY] Registrando meu nÃ³ ({meu_url}) com {peer}...")
             requests.post(f"{peer}/nodes/register", json={'url': meu_url}, timeout=5)
             
         except requests.exceptions.RequestException as e:
-            print(f"[DISCOVERY ERROR] Falha ao conectar/descobrir peer {peer}: {e}. Marcando para remoção.")
-            if peer not in SEED_NODES: # Não remove nós semente automaticamente
+            print(f"[DISCOVERY ERROR] Falha ao conectar/descobrir peer {peer}: {e}. Marcando para remoÃ§Ã£o.")
+            if peer not in SEED_NODES: # NÃ£o remove nÃ³s semente automaticamente
                 peers_to_remove_during_discovery.add(peer)
         except Exception as e:
-            print(f"[DISCOVERY ERROR] Erro inesperado durante descoberta com {peer}: {e}. Marcando para remoção.")
-            if peer not in SEED_NODES: # Não remove nós semente automaticamente
+            print(f"[DISCOVERY ERROR] Erro inesperado durante descoberta com {peer}: {e}. Marcando para remoÃ§Ã£o.")
+            if peer not in SEED_NODES: # NÃ£o remove nÃ³s semente automaticamente
                 peers_to_remove_during_discovery.add(peer)
 
-    # Salva a lista de peers após todas as operações de descoberta e remoção
+    # Salva a lista de peers apÃ³s todas as operaÃ§Ãµes de descoberta e remoÃ§Ã£o
     if new_peers_discovered or peers_to_remove_during_discovery:
         known_nodes.difference_update(peers_to_remove_during_discovery)
         salvar_peers(known_nodes)
         if peers_to_remove_during_discovery:
-            print(f"[DISCOVERY] Removidos {len(peers_to_remove_during_discovery)} peers problemáticos.")
+            print(f"[DISCOVERY] Removidos {len(peers_to_remove_during_discovery)} peers problemÃ¡ticos.")
 
 def get_my_ip():
-    """Tenta obter o IP local do nó e avisa se for privado."""
+    """Tenta obter o IP local do nÃ³ e avisa se for privado."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80)) # Conecta a um IP público para obter o IP de saída
+        s.connect(("8.8.8.8", 80)) # Conecta a um IP pÃºblico para obter o IP de saÃ­da
         ip = s.getsockname()[0]
         s.close()
         try:
             if ipaddress.ip_address(ip).is_private:
-                print(f"[AVISO IP] Seu IP ({ip}) é privado. Para comunicação completa com peers públicos, configure o redirecionamento de portas (port forwarding) para a porta {port} no seu roteador e use um IP público ou serviço DDNS.")
+                print(f"[AVISO IP] Seu IP ({ip}) Ã© privado. Para comunicaÃ§Ã£o completa com peers pÃºblicos, configure o redirecionamento de portas (port forwarding) para a porta {port} no seu roteador e use um IP pÃºblico ou serviÃ§o DDNS.")
         except ValueError:
-            pass # Não é um IP válido para verificar se é privado
+            pass # NÃ£o Ã© um IP vÃ¡lido para verificar se Ã© privado
         return ip
     except Exception:
-        print("[AVISO IP] Não foi possível determinar o IP local. Usando 127.0.0.1 como fallback. A comunicação com peers externos pode ser limitada.")
+        print("[AVISO IP] NÃ£o foi possÃ­vel determinar o IP local. Usando 127.0.0.1 como fallback. A comunicaÃ§Ã£o com peers externos pode ser limitada.")
         return "127.0.0.1"
 
 def load_or_create_node_id(filename="node_id.txt"):
-    """Carrega ou cria um ID de nó único."""
+    """Carrega ou cria um ID de nÃ³ Ãºnico."""
     if os.path.exists(filename):
         with open(filename, "r") as f:
             node_id_loaded = f.read().strip()
-            print(f"[BOOT] ID do nó carregado: {node_id_loaded}")
+            print(f"[BOOT] ID do nÃ³ carregado: {node_id_loaded}")
             return node_id_loaded
     else:
         new_id = str(uuid4()).replace("-", "")[:16]
         with open(filename, "w") as f:
             f.write(new_id)
-        print(f"[BOOT] Novo ID do nó criado: {new_id}")
+        print(f"[BOOT] Novo ID do nÃ³ criado: {new_id}")
         return new_id
 
-# Funções auxiliares para auto_sync_checker
+# FunÃ§Ãµes auxiliares para auto_sync_checker
 def auto_sync_checker(blockchain_instance):
-    """Verifica periodicamente a sincronização com os peers e inicia a resolução de conflitos se necessário."""
+    """Verifica periodicamente a sincronizaÃ§Ã£o com os peers e inicia a resoluÃ§Ã£o de conflitos se necessÃ¡rio."""
     while True:
         try:
             comparar_ultimos_blocos(blockchain_instance)
         except Exception as e:
-            print(f"[SYNC_CHECKER ERROR] Erro no verificador de sincronização: {e}")
+            print(f"[SYNC_CHECKER ERROR] Erro no verificador de sincronizaÃ§Ã£o: {e}")
         time.sleep(60) # Verifica a cada 60 segundos
 
 def safe_json_response(resp, peer):
@@ -1562,20 +1570,20 @@ def safe_json_response(resp, peer):
             print(f"[NET] {peer} retornou status {resp.status_code}")
             return None
         if 'application/json' not in resp.headers.get('Content-Type', ''):
-            print(f"[NET] {peer} não retornou JSON")
+            print(f"[NET] {peer} nÃ£o retornou JSON")
             return None
         return resp.json()
     except Exception as e:
-        print(f"[NET] JSON inválido de {peer}: {e}")
+        print(f"[NET] JSON invÃ¡lido de {peer}: {e}")
         return None
 
 def comparar_ultimos_blocos(blockchain_instance):
-    """Compara o último bloco local com o dos peers e inicia a resolução de conflitos se houver diferença."""
+    """Compara o Ãºltimo bloco local com o dos peers e inicia a resoluÃ§Ã£o de conflitos se houver diferenÃ§a."""
     if blockchain_instance is None or blockchain_instance.last_block() is None:
-        print("[SYNC] Blockchain ainda não inicializada. Aguardando...")
+        print("[SYNC] Blockchain ainda nÃ£o inicializada. Aguardando...")
         return
 
-    print("\n🔍 Verificando sincronização com os peers...")
+    print("\nðŸ” Verificando sincronizaÃ§Ã£o com os peers...")
     local_block = blockchain_instance.last_block()
     local_hash = blockchain_instance.hash(local_block)
 
@@ -1597,37 +1605,37 @@ def comparar_ultimos_blocos(blockchain_instance):
             peer_hash = blockchain_instance.hash(peer_last)
 
             if peer_index is None or peer_hash is None:
-                print(f"[SYNC ⚠️] Resposta de sincronização malformada de {peer}. Marcando peer para remoção.")
+                print(f"[SYNC âš ï¸] Resposta de sincronizaÃ§Ã£o malformada de {peer}. Marcando peer para remoÃ§Ã£o.")
                 peers_to_remove_during_sync_check.add(peer)
                 continue
 
             if peer_index == local_block['index'] and peer_hash == local_hash:
-                print(f"[SYNC ✅] {peer} está sincronizado com índice {peer_index}.")
+                print(f"[SYNC âœ…] {peer} estÃ¡ sincronizado com Ã­ndice {peer_index}.")
             else:
-                print(f"[SYNC ⚠️] {peer} DIFERENTE! Local: {local_block['index']} | Peer: {peer_index}. Iniciando resolução de conflitos.")
+                print(f"[SYNC âš ï¸] {peer} DIFERENTE! Local: {local_block['index']} | Peer: {peer_index}. Iniciando resoluÃ§Ã£o de conflitos.")
                 threading.Thread(target=blockchain_instance.resolve_conflicts, daemon=True).start()
         except requests.exceptions.RequestException as e:
-            print(f"[SYNC ❌] Falha ao verificar {peer}: {e}. Marcando peer para remoção.")
+            print(f"[SYNC âŒ] Falha ao verificar {peer}: {e}. Marcando peer para remoÃ§Ã£o.")
             if peer not in SEED_NODES:
                 peers_to_remove_during_sync_check.add(peer)
         except Exception as e:
-            print(f"[SYNC ❌] Erro inesperado ao verificar {peer}: {e}. Marcando peer para remoção.")
+            print(f"[SYNC âŒ] Erro inesperado ao verificar {peer}: {e}. Marcando peer para remoÃ§Ã£o.")
             if peer not in SEED_NODES:
                 peers_to_remove_during_sync_check.add(peer)
     
     if peers_to_remove_during_sync_check:
         known_nodes.difference_update(peers_to_remove_during_sync_check)
         salvar_peers(known_nodes)
-        print(f"[SYNC] Removidos {len(peers_to_remove_during_sync_check)} peers problemáticos durante a verificação de sincronização.")
+        print(f"[SYNC] Removidos {len(peers_to_remove_during_sync_check)} peers problemÃ¡ticos durante a verificaÃ§Ã£o de sincronizaÃ§Ã£o.")
 
 def broadcast_new_block(block):
     for node in known_nodes:
         try:
             requests.post(f"{node}/blocks/receive", json=block, timeout=2)
         except:
-            print(f"Node {node} offline, não recebeu o bloco.")
+            print(f"Node {node} offline, nÃ£o recebeu o bloco.")
             
-# --- Execução Principal ---
+# --- ExecuÃ§Ã£o Principal ---
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
@@ -1637,29 +1645,29 @@ def run_server():
     node_id_val = load_or_create_node_id()
     blockchain = Blockchain(conn, node_id_val)
 
-    # 🔹 IP interno (somente para o Flask escutar)
+    # ðŸ”¹ IP interno (somente para o Flask escutar)
     meu_ip = get_my_ip()
 
-    # 🔹 URL pública real (evita nó isolado)
+    # ðŸ”¹ URL pÃºblica real (evita nÃ³ isolado)
     public_url = os.environ.get("PUBLIC_URL")
 
     if public_url:
         meu_url = public_url.rstrip('/')
-        print(f"[INFO] 🌍 URL pública do nó: {meu_url}")
+        print(f"[INFO] ðŸŒ URL pÃºblica do nÃ³: {meu_url}")
     else:
         meu_url = f"http://{meu_ip}:{port}"
-        print(f"[WARN] ⚠ PUBLIC_URL não definida — nó pode ficar isolado.")
+        print(f"[WARN] âš  PUBLIC_URL nÃ£o definida â€” nÃ³ pode ficar isolado.")
         print(f"[INFO] URL local: {meu_url}")
 
-    # 🔹 Garante que o próprio nó não está na lista de peers
+    # ðŸ”¹ Garante que o prÃ³prio nÃ³ nÃ£o estÃ¡ na lista de peers
     known_nodes.discard(meu_url)
 
-    # 🔹 Inicia descoberta de peers
+    # ðŸ”¹ Inicia descoberta de peers
     threading.Thread(target=discover_peers, daemon=True).start()
 
-    # 🔹 Espera real por peers antes de sincronizar (anti-fork)
+    # ðŸ”¹ Espera real por peers antes de sincronizar (anti-fork)
     print("[BOOT] Aguardando peers iniciais...")
-    for _ in range(12):  # até ~24s
+    for _ in range(12):  # atÃ© ~24s
         if known_nodes:
             break
         time.sleep(2)
@@ -1670,19 +1678,19 @@ def run_server():
     else:
         print("[BOOT] Nenhum peer ainda. Operando temporariamente isolado.")
 
-    # 🔹 Segunda tentativa de sync após a rede estabilizar
+    # ðŸ”¹ Segunda tentativa de sync apÃ³s a rede estabilizar
     def delayed_second_sync():
         time.sleep(30)
         if known_nodes:
-            print("[BOOT] Segunda verificação de consenso após estabilização da rede...")
+            print("[BOOT] Segunda verificaÃ§Ã£o de consenso apÃ³s estabilizaÃ§Ã£o da rede...")
             blockchain.resolve_conflicts()
 
     threading.Thread(target=delayed_second_sync, daemon=True).start()
 
-    # 🔹 Inicia verificador automático de sincronização contínua
+    # ðŸ”¹ Inicia verificador automÃ¡tico de sincronizaÃ§Ã£o contÃ­nua
     threading.Thread(target=auto_sync_checker, args=(blockchain,), daemon=True).start()
 
-    print(f"[INFO] 🚀 Nó rodando na porta {port}")
+    print(f"[INFO] ðŸš€ NÃ³ rodando na porta {port}")
     app.run(host='0.0.0.0', port=port, threaded=True)
 
 
