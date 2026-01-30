@@ -40,11 +40,60 @@ COIN_SYMBOL = "KERT"
 PEERS_FILE = 'peers.json'
 WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do cliente
 
-# --- NÓS SEMENTES (SEED NODES) ---
-SEED_NODES = [
-    "https://seend.kert-one.com",
-    "https://seend2.kert-one.com",
-]
+# --- NÓS SEMENTES (Mantenha a variável mesmo que use o GitHub) ---
+SEED_NODES = [] 
+GITHUB_NODES_URL = "https://raw.githubusercontent.com/douglaskert/kert-one/main/nodes.json"
+
+def fetch_github_nodes():
+    """Busca a lista oficial de IPs no GitHub"""
+    global known_nodes, meu_url
+    try:
+        print(f"📡 [GITHUB] Verificando sementes em: {GITHUB_NODES_URL}")
+        r = requests.get(GITHUB_NODES_URL, timeout=5)
+        if r.status_code == 200:
+            new_seeds = r.json()
+            added = 0
+            for seed in new_seeds:
+                seed = seed.strip()
+                if seed and seed != meu_url and seed not in known_nodes:
+                    known_nodes.add(seed)
+                    added += 1
+            if added > 0:
+                print(f"🚀 [GITHUB] {added} novos peers adicionados do repositório!")
+                save_peers()
+    except Exception as e:
+        print(f"⚠️ [GITHUB] Erro ao acessar repositório: {e}")
+
+def discover_peers():
+    """Lógica de descoberta unificada"""
+    global known_nodes, meu_url
+    print("🔍 [SYNC] Iniciando descoberta de rede...")
+    
+    # 1. Carrega o que já conhece localmente
+    load_peers() 
+    
+    # 2. Busca novidades no GitHub
+    fetch_github_nodes()
+    
+    # 3. Testa quem está online e descobre vizinhos dos vizinhos
+    current_peers = list(known_nodes)
+    for peer in current_peers:
+        if peer == meu_url: continue
+        try:
+            # Tenta pegar a lista de nós desse peer
+            response = requests.get(f"{peer}/nodes", timeout=3)
+            if response.status_code == 200:
+                print(f"✅ Peer ativo encontrado: {peer}")
+                # Opcional: Adicionar os vizinhos que ele conhece
+                nodes_from_peer = response.json().get('nodes', [])
+                for n in nodes_from_peer:
+                    if n != meu_url: known_nodes.add(n)
+        except:
+            print(f"⚠️ Peer {peer} inacessível no momento.")
+    
+    save_peers()
+# --- Na função discover_peers ou no início do programa ---
+# Chame fetch_external_seeds() logo após carregar o peers.json
 # ================= PROTOCOLO ECONÔMICO (TRAVAMENTO) =================
 PROTOCOL_RULES = {
     "coin": COIN_SYMBOL,
@@ -2307,7 +2356,7 @@ class APIClient:
 
 # --- Execução Principal ---
 def run_server():
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
