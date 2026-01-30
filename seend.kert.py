@@ -14,7 +14,7 @@ import sys
 from ecdsa import SigningKey, VerifyingKey, SECP256k1, BadSignatureError
 import qrcode
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime 
 import re
 import shutil
 from flask_cors import CORS
@@ -25,7 +25,7 @@ MINING_REWARD = 50 # Recompensa padrão (será sobrescrita pela lógica de halvi
 DATABASE = 'chain.db'
 COIN_NAME = "Kert-One"
 COIN_SYMBOL = "KERT"
-PEERS_FILE = 'peers.json'
+PEERS_FILE = 'peers.json' 
 WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do cliente - mantido para compatibilidade, mas não usado pela GUI
 used_proofs = set()
 MAX_STORED_PROOFS = 5000
@@ -39,12 +39,61 @@ miner_address = None
 is_mining = False
 miner_lock = threading.Lock()
 
-# --- NÓS SEMENTES (SEED NODES) ---
-SEED_NODES = [
-    "https://seed.kert-one.com",
-    "https://seend2.kert-one.com",
-]
+# --- NÓS SEMENTES (Mantenha a variável mesmo que use o GitHub) ---
+SEED_NODES = [] 
+GITHUB_NODES_URL = "https://raw.githubusercontent.com/douglaskert/kert-one/main/nodes.json"
 
+def fetch_github_nodes():
+    """Busca a lista oficial de IPs no GitHub"""
+    global known_nodes, meu_url
+    try:
+        print(f"📡 [GITHUB] Verificando sementes em: {GITHUB_NODES_URL}")
+        r = requests.get(GITHUB_NODES_URL, timeout=5)
+        if r.status_code == 200:
+            new_seeds = r.json()
+            added = 0
+            for seed in new_seeds:
+                seed = seed.strip()
+                if seed and seed != meu_url and seed not in known_nodes:
+                    known_nodes.add(seed)
+                    added += 1
+            if added > 0:
+                print(f"🚀 [GITHUB] {added} novos peers adicionados do repositório!")
+                save_peers()
+    except Exception as e:
+        print(f"⚠️ [GITHUB] Erro ao acessar repositório: {e}")
+
+def discover_peers():
+    """Lógica de descoberta unificada"""
+    global known_nodes, meu_url
+    print("🔍 [SYNC] Iniciando descoberta de rede...")
+    
+    # 1. Carrega o que já conhece localmente
+    load_peers() 
+    
+    # 2. Busca novidades no GitHub
+    fetch_github_nodes()
+    
+    # 3. Testa quem está online e descobre vizinhos dos vizinhos
+    current_peers = list(known_nodes)
+    for peer in current_peers:
+        if peer == meu_url: continue
+        try:
+            # Tenta pegar a lista de nós desse peer
+            response = requests.get(f"{peer}/nodes", timeout=3)
+            if response.status_code == 200:
+                print(f"✅ Peer ativo encontrado: {peer}")
+                # Opcional: Adicionar os vizinhos que ele conhece
+                nodes_from_peer = response.json().get('nodes', [])
+                for n in nodes_from_peer:
+                    if n != meu_url: known_nodes.add(n)
+        except:
+            print(f"⚠️ Peer {peer} inacessível no momento.")
+    
+    save_peers()
+
+# --- Na função discover_peers ou no início do programa ---
+# Chame fetch_external_seeds() logo após carregar o peers.json
 PROTOCOL_VERSION = "KERT-CORE-1.0"
 
 PROTOCOL_RULES = {
@@ -253,7 +302,6 @@ class Blockchain:
         protocol_value = BASE_VALUE + cost_per_coin
     
         return round(protocol_value, 8)
-
     
     def new_block(self, proof, previous_hash, miner, initial_difficulty=None):
         """Cria um novo bloco e o adiciona à cadeia."""
@@ -1727,7 +1775,7 @@ def broadcast_new_block(block):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 5001))
+    port = int(os.environ.get('PORT', 5000))
 
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
@@ -1738,10 +1786,10 @@ def run_server():
 
     # 🔹 URL pública real (evita nó isolado)
     public_url = os.environ.get("PUBLIC_URL")
- 
+
     if public_url:
         meu_url = public_url.rstrip('/')
-        print(f"[INFO] 🌍 URL pública do nó: {meu_url}") 
+        print(f"[INFO] 🌍 URL pública do nó: {meu_url}")
     else:
         meu_url = f"http://{meu_ip}:{port}"
         print(f"[WARN] ⚠ PUBLIC_URL não definida — nó pode ficar isolado.")
@@ -1754,7 +1802,7 @@ def run_server():
     threading.Thread(target=discover_peers, daemon=True).start()
 
     # 🔹 Espera real por peers antes de sincronizar (anti-fork)
-    print("[BOOT] Aguardando peers iniciais...") 
+    print("[BOOT] Aguardando peers iniciais...")
     for _ in range(12):  # até ~24s
         if known_nodes:
             break
