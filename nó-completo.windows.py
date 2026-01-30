@@ -547,7 +547,8 @@ class Blockchain:
         import multiprocessing
         
         # Detecta núcleos
-        cpu_count = multiprocessing.cpu_count()
+        cpu_count = max(1, multiprocessing.cpu_count() // 2)
+
         
         print("\n" + "="*30)
         print(f"🚀 MINERAÇÃO INICIADA")
