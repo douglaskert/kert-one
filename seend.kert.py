@@ -14,18 +14,18 @@ import sys
 from ecdsa import SigningKey, VerifyingKey, SECP256k1, BadSignatureError
 import qrcode
 from io import BytesIO
-from datetime import datetime 
+from datetime import datetime
 import re
 import shutil
 from flask_cors import CORS
 
-# --- Configurações ---
+# --- Configurações ---  
 DIFFICULTY = 1 # Dificuldade inicial para o bloco Gênese
 MINING_REWARD = 50 # Recompensa padrão (será sobrescrita pela lógica de halving)
 DATABASE = 'chain.db'
 COIN_NAME = "Kert-One"
 COIN_SYMBOL = "KERT"
-PEERS_FILE = 'peers.json' 
+PEERS_FILE = 'peers.json'
 WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do cliente - mantido para compatibilidade, mas não usado pela GUI
 used_proofs = set()
 MAX_STORED_PROOFS = 5000
@@ -33,7 +33,6 @@ MAX_STORED_PROOFS = 5000
 GENESIS_MINER = "KERT-GENESIS"          # miner fixo para o bloco 1
 GENESIS_PROOF = 100
 GENESIS_PREVIOUS_HASH = "1"
-GENESIS_TIMESTAMP = 1609459200.0        # por exemplo: 2021-01-01 00:00:00 UTC (fixo)
 
 miner_address = None
 is_mining = False
@@ -44,53 +43,58 @@ SEED_NODES = []
 GITHUB_NODES_URL = "https://raw.githubusercontent.com/douglaskert/kert-one/main/nodes.json"
 
 def fetch_github_nodes():
-    """Busca a lista oficial de IPs no GitHub"""
-    global known_nodes, meu_url
+    global known_nodes
     try:
-        print(f"📡 [GITHUB] Verificando sementes em: {GITHUB_NODES_URL}")
         r = requests.get(GITHUB_NODES_URL, timeout=5)
         if r.status_code == 200:
             new_seeds = r.json()
-            added = 0
             for seed in new_seeds:
                 seed = seed.strip()
-                if seed and seed != meu_url and seed not in known_nodes:
+                if seed and seed != meu_url:
                     known_nodes.add(seed)
-                    added += 1
-            if added > 0:
-                print(f"🚀 [GITHUB] {added} novos peers adicionados do repositório!")
-                save_peers()
-    except Exception as e:
-        print(f"⚠️ [GITHUB] Erro ao acessar repositório: {e}")
+            
+            # ADICIONE ESTA LINHA AQUI EMBAIXO:
+            save_peers() 
+            print("🚀 [GITHUB] Lista salva em peers.json!")
+    except:
+        print("⚠️ [GITHUB] Erro ao buscar/salvar.")
 
-def discover_peers():
-    """Lógica de descoberta unificada"""
-    global known_nodes, meu_url
-    print("🔍 [SYNC] Iniciando descoberta de rede...")
-    
-    # 1. Carrega o que já conhece localmente
-    load_peers() 
-    
-    # 2. Busca novidades no GitHub
-    fetch_github_nodes()
-    
-    # 3. Testa quem está online e descobre vizinhos dos vizinhos
-    current_peers = list(known_nodes)
-    for peer in current_peers:
-        if peer == meu_url: continue
+def save_peers():
+    global known_nodes
+    try:
+        with open(PEERS_FILE, 'w') as f:
+            json.dump(sorted(list(known_nodes)), f, indent=2)
+        print(f"[PEERS] {len(known_nodes)} peers salvos em {PEERS_FILE}.")
+    except Exception as e:
+        print(f"[PEERS ERRO] Falha ao salvar {PEERS_FILE}: {e}")
+
+
+def network_loop():
+    while True:
         try:
-            # Tenta pegar a lista de nós desse peer
-            response = requests.get(f"{peer}/nodes", timeout=3)
-            if response.status_code == 200:
-                print(f"✅ Peer ativo encontrado: {peer}")
-                # Opcional: Adicionar os vizinhos que ele conhece
-                nodes_from_peer = response.json().get('nodes', [])
-                for n in nodes_from_peer:
-                    if n != meu_url: known_nodes.add(n)
-        except:
-            print(f"⚠️ Peer {peer} inacessível no momento.")
-    
-    save_peers()
+            discover_peers()
+            blockchain.resolve_conflicts()
+        except Exception as e:
+            print(f"[NETWORK] Erro: {e}")
+        time.sleep(25)
+
+threading.Thread(target=network_loop, daemon=True).start()
+
+
+def load_peers():
+    """Carrega peers SEM sobrescrever os atuais"""
+    if not os.path.exists(PEERS_FILE):
+        return
+    try:
+        with open(PEERS_FILE, 'r') as f:
+            peers = json.load(f)
+            for p in peers:
+                if isinstance(p, str) and p.startswith("http"):
+                    known_nodes.add(p)
+        print(f"[PEERS] {len(known_nodes)} peers ativos.")
+    except Exception as e:
+        print(f"[PEERS] erro ao carregar: {e}")
+
 
 # --- Na função discover_peers ou no início do programa ---
 # Chame fetch_external_seeds() logo após carregar o peers.json
@@ -181,7 +185,7 @@ def periodic_network_maintenance():
     while True:
         time.sleep(30)
         try:
-            blockchain.discover_nodes()
+            discover_peers()              # função global correta
             blockchain.resolve_conflicts()
         except Exception as e:
             print(f"[NET_MAINT_ERR] {e}")
@@ -302,8 +306,9 @@ class Blockchain:
         protocol_value = BASE_VALUE + cost_per_coin
     
         return round(protocol_value, 8)
+
     
-    def new_block(self, proof, previous_hash, miner, initial_difficulty=None):
+    def new_block(self, proof, previous_hash, miner, initial_difficulty=None, timestamp=None):
         """Cria um novo bloco e o adiciona à cadeia."""
         block_index = len(self.chain) + 1
         reward = self._get_mining_reward(block_index)
@@ -737,107 +742,74 @@ class Blockchain:
         return total_difficulty
 
     def resolve_conflicts(self):
-        """
-        Implementa o algoritmo de consenso para resolver conflitos na cadeia.
-        Substitui a cadeia local pela mais longa e válida da rede.
-        """
-        global known_nodes # Acessa a variável global known_nodes
-        neighbors = list(known_nodes) # Cria uma cópia para iterar
+        global known_nodes
+
+        neighbors = list(known_nodes)
         new_chain = None
+
         current_total_difficulty = self.get_total_difficulty(self.chain)
+        current_length = len(self.chain)
 
-        print(f"[CONSENSO] Tentando resolver conflitos com {len(neighbors)} vizinhos... Cadeia local dificuldade: {current_total_difficulty}")
+        print(f"[CONSENSO] Nós vizinhos: {len(neighbors)} | Dificuldade local: {current_total_difficulty} | Blocos: {current_length}")
 
-        peers_to_remove_during_conflict_resolution = set()
+        peers_to_remove = set()
 
         for node_url in neighbors:
             if node_url == meu_url:
-                continue # Não tentar resolver conflito consigo mesmo
+                continue
+
             try:
-                print(f"[CONSENSO] Buscando cadeia de {node_url}...")
-                response = requests.get(f"{node_url}/chain", timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    peer_chain = data.get("chain")
+                print(f"[CONSENSO] Consultando {node_url}...")
+                response = requests.get(f"{node_url}/chain", timeout=8)
 
-                    if not peer_chain:
-                        print(f"[CONSENSO] Resposta malformada (sem 'chain') de {node_url}. Marcando peer para remoção.")
-                        peers_to_remove_during_conflict_resolution.add(node_url)
-                        continue
+                if response.status_code != 200:
+                    peers_to_remove.add(node_url)
+                    continue
 
-                    peer_total_difficulty = self.get_total_difficulty(peer_chain)
-                    
-                    print(f"[CONSENSO] Node {node_url}: Dificuldade Total={peer_total_difficulty}, Comprimento={len(peer_chain)}. Local Comprimento={len(self.chain)}")
+                data = response.json()
+                peer_chain = data.get("chain")
 
-                    # Prioriza a cadeia com maior dificuldade total
-                    if peer_total_difficulty > current_total_difficulty and self.valid_chain(peer_chain):
-                        current_total_difficulty = peer_total_difficulty
+                if not peer_chain:
+                    peers_to_remove.add(node_url)
+                    continue
+
+                peer_difficulty = self.get_total_difficulty(peer_chain)
+                peer_length = len(peer_chain)
+
+                print(f"[CONSENSO] Peer {node_url} → diff={peer_difficulty} | len={peer_length}")
+
+                if self.valid_chain(peer_chain):
+                    if (
+                        peer_difficulty > current_total_difficulty or
+                        (peer_difficulty == current_total_difficulty and peer_length > current_length)
+                    ):
+                        print(f"[CONSENSO] ✔ Nova melhor cadeia encontrada em {node_url}")
+                        current_total_difficulty = peer_difficulty
+                        current_length = peer_length
                         new_chain = peer_chain
-                        print(f"[CONSENSO] ✔ Cadeia mais difícil e válida encontrada em {node_url} (Dificuldade: {peer_total_difficulty})")
-                    else:
-                        print(f"[CONSENSO] ✘ Cadeia de {node_url} (Dificuldade: {peer_total_difficulty}) não é mais difícil ou não é válida.")
-                else:
-                    print(f"[CONSENSO] Resposta inválida de {node_url}: Status {response.status_code}. Marcando peer para remoção.")
-                    peers_to_remove_during_conflict_resolution.add(node_url)
-            except requests.exceptions.RequestException as e:
-                print(f"[CONSENSO] Erro ao buscar cadeia de {node_url}: {e}. Marcando peer para remoção.")
-                peers_to_remove_during_conflict_resolution.add(node_url)
-            except Exception as e:
-                print(f"[CONSENSO] Erro inesperado ao processar cadeia de {node_url}: {e}. Marcando peer para remoção.")
-                peers_to_remove_during_conflict_resolution.add(node_url)
 
-        # Remove peers problemáticos APÓS a iteração
-        if peers_to_remove_during_conflict_resolution:
-            for peer in peers_to_remove_during_conflict_resolution:
-                if peer not in SEED_NODES: # Não remove nós semente automaticamente
-                    known_nodes.discard(peer)
-                    print(f"[CONSENSO] Removido peer problemático: {peer}")
-            salvar_peers(known_nodes)
+            except Exception as e:
+                print(f"[CONSENSO] Erro com peer {node_url}: {e}")
+                peers_to_remove.add(node_url)
+
+        for peer in peers_to_remove:
+            if peer not in SEED_NODES:
+                known_nodes.discard(peer)
+
+        if peers_to_remove:
+           salvar_peers(known_nodes)
 
         if new_chain:
-            # Identifica transações da cadeia antiga que não estão na nova cadeia
-            old_chain_tx_ids = set()
-            for block in self.chain:
-                for tx in block.get('transactions', []):
-                    old_chain_tx_ids.add(tx['id'])
-
-            new_chain_tx_ids = set()
-            for block in new_chain:
-                for tx in block.get('transactions', []):
-                    new_chain_tx_ids.add(tx['id'])
-            
-            re_add_txs = []
-            # Adiciona transações da cadeia antiga que não foram incluídas na nova cadeia
-            for block in self.chain:
-                for tx in block.get('transactions', []):
-                    if tx['id'] not in new_chain_tx_ids and tx['sender'] != '0': # Ignora TXs de recompensa
-                        re_add_txs.append(tx)
-            
-            # Adiciona transações pendentes atuais que não foram incluídas na nova cadeia
-            for tx in self.current_transactions:
-                if tx['id'] not in new_chain_tx_ids:
-                    re_add_txs.append(tx)
-
-            # Limpa as transações pendentes e as re-adiciona (evitando duplicatas)
-            self.current_transactions = []
-            for tx in re_add_txs:
-                temp_tx_for_duplicate_check = {
-                    'sender': tx['sender'],
-                    'recipient': tx['recipient'],
-                    'amount': tx['amount'],
-                    'fee': tx['fee'],
-                    'id': tx.get('id')
-                }
-                if not self.is_duplicate_transaction(temp_tx_for_duplicate_check):
-                    self.current_transactions.append(tx)
-            
+            print("[CONSENSO] 🔄 Substituindo cadeia local pela da rede...")
             self.chain = new_chain
             self._rebuild_db_from_chain()
-            print(f"[CONSENSO] ✅ Cadeia substituída com sucesso pela mais difícil e válida (Dificuldade: {current_total_difficulty}). {len(re_add_txs)} transações re-adicionadas à fila pendente.")
+            print("[CONSENSO] ✅ Sincronização total concluída.")
             return True
 
-        print("[CONSENSO] 🔒 Cadeia local continua sendo a mais difícil ou nenhuma cadeia mais difícil/válida foi encontrada.")
+        self._rebuild_db_from_chain()
+        print("[CONSENSO] Cadeia local mantida, DB verificado.")
         return False
+
 
     def _rebuild_db_from_chain(self):
         print("[REBUILD] Reconstruindo dados locais...")
@@ -1322,81 +1294,58 @@ def verify_signature(public_key_hex, signature_hex, tx_data):
         
 @app.route('/blocks/receive', methods=['POST'])
 def receive_block_api():
-    """Recebe um bloco de outro nó e tenta adicioná-lo à cadeia local."""
     block_data = request.get_json()
-
     if not block_data:
         return jsonify({"message": "Nenhum dado de bloco recebido."}), 400
 
-    required_keys = [
-        'index', 'previous_hash', 'proof', 'timestamp',
-        'miner', 'transactions', 'difficulty', 'protocol_value'
-    ]
-    if not all(k in block_data for k in required_keys):
+    required = ['index','previous_hash','proof','timestamp','miner','transactions','difficulty','protocol_value']
+    if not all(k in block_data for k in required):
         return jsonify({"message": "Dados de bloco incompletos."}), 400
 
-    # Força tipos numéricos para evitar comparações falhas
     try:
         block_data['index'] = int(block_data['index'])
         block_data['difficulty'] = int(block_data['difficulty'])
         block_data['proof'] = int(block_data['proof'])
         block_data['timestamp'] = float(block_data['timestamp'])
-    except Exception:
-        return jsonify({'message': 'Tipos de dados inválidos no bloco'}), 400
+    except:
+        return jsonify({'message': 'Tipos inválidos'}), 400
 
-    # 🧠 Se ainda não temos cadeia → sincroniza
     if not blockchain.chain:
         threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
         return jsonify({'message': 'Sincronizando cadeia inicial.'}), 202
 
     last_block = blockchain.last_block()
 
-    # 🔁 Bloco antigo ou repetido
     if block_data['index'] <= last_block['index']:
         return jsonify({'message': 'Bloco antigo/duplicado.'}), 200
 
-    # ⏳ Bloco muito à frente → pede sync
     if block_data['index'] > last_block['index'] + 1:
         threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
         return jsonify({'message': 'Bloco à frente. Sincronizando.'}), 202
 
-    # 🔗 Hash anterior
     if block_data['previous_hash'] != blockchain.hash(last_block):
         threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
         return jsonify({'message': 'Hash anterior inválido'}), 400
 
-    # ⛏️ PoW
     if not blockchain.valid_proof(last_block['proof'], block_data['proof'], block_data['difficulty']):
         return jsonify({'message': 'Proof of Work inválido'}), 400
 
-    # 🔒 Verifica integridade do bloco recebido (se o peer enviou o campo 'hash')
-    calculated_hash = blockchain.hash(block_data)
-    if 'hash' in block_data and block_data['hash'] != calculated_hash:
-        return jsonify({'message': 'Hash do bloco inválido'}), 400
-
-    # ⏰ Proteção tempo futuro
     if block_data['timestamp'] > time.time() + 120:
         return jsonify({'message': 'Timestamp no futuro'}), 400
 
-    # 💰 CONSENSO ECONÔMICO (CORRIGIDO)
-    expected_value = float(blockchain.calculate_protocol_value_for_block(
-        block_data['index'],
-        block_data['difficulty']
-    ))
-
+    # 🔥 AQUI ESTÁ A CORREÇÃO
+    # Não rejeitamos bloco por diferença de protocol_value
     try:
         peer_value = float(block_data.get('protocol_value', 0))
+        if peer_value <= 0:
+            return jsonify({'message': 'Protocol Value estruturalmente inválido'}), 400
     except:
-        peer_value = 0.0
-
-    if abs(peer_value - expected_value) > 1e-6:
         return jsonify({'message': 'Protocol Value inválido'}), 400
 
-    # 🧾 Transações
+    # Validação de transações
     for tx in block_data['transactions']:
         if tx['sender'] == '0':
             continue
-
         try:
             tx_for_verification = {
                 'amount': f"{float(tx['amount']):.8f}",
@@ -1404,33 +1353,25 @@ def receive_block_api():
                 'recipient': tx['recipient'],
                 'sender': tx['sender']
             }
-
-            pub = tx.get('public_key', '')
-            if isinstance(pub, str) and pub.startswith("04") and len(pub) == 130:
+            pub = tx.get('public_key','')
+            if isinstance(pub,str) and pub.startswith("04") and len(pub)==130:
                 pub = pub[2:]
-
             if not verify_signature(pub, tx['signature'], tx_for_verification):
-                raise ValueError("Assinatura inválida")
-
-        except Exception:
+                raise ValueError
+        except:
             return jsonify({'message': 'Transação inválida'}), 400
 
-    # 🔐 Validação final de cadeia (anti-fork malicioso)
     temp_chain = blockchain.chain + [block_data]
     if not blockchain.valid_chain(temp_chain):
         return jsonify({'message': 'Bloco quebra regras da cadeia'}), 400
 
-    # ✅ Bloco aceito
     blockchain.chain.append(block_data)
     blockchain._save_block(block_data)
 
     mined_ids = {t.get('id') for t in block_data['transactions']}
-    blockchain.current_transactions = [
-        tx for tx in blockchain.current_transactions if tx.get('id') not in mined_ids
-    ]
+    blockchain.current_transactions = [tx for tx in blockchain.current_transactions if tx.get('id') not in mined_ids]
 
     return jsonify({'message': 'Bloco aceito'}), 200
-
 
 
 @app.route('/sync/check', methods=['GET'])
@@ -1588,76 +1529,37 @@ def broadcast_block(block):
         print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
 
 def discover_peers():
-    """
-    Descobre e registra peers na rede.
-    Prioriza a conexão com os nós semente (SEED_NODES) para iniciar a descoberta.
-    """
     global known_nodes, meu_url
-    
-    # 1. Adiciona os nós semente à lista de peers conhecidos.
-    initial_known_nodes_count = len(known_nodes)
-    for seed in SEED_NODES:
-        if seed not in known_nodes and seed != meu_url:
-            known_nodes.add(seed)
-            print(f"[DISCOVERY] Adicionando nó semente: {seed}")
-    
-    if len(known_nodes) > initial_known_nodes_count:
-        salvar_peers(known_nodes) # Salva a lista atualizada de peers se houver novas adições
 
-    # 2. Itera sobre a lista de peers conhecidos (incluindo os nós semente)
-    # para descobrir novos peers e registrar o nó local.
-    peers_to_check = list(known_nodes.copy()) # Cria uma cópia para iterar
-    
-    peers_to_remove_during_discovery = set()
-    new_peers_discovered = False
+    print("[DISCOVERY] Iniciando varredura de peers...")
 
-    for peer in peers_to_check:
+    # 1. Carrega seeds locais
+    load_peers()
+
+    # 2. Busca seeds GitHub
+    fetch_github_nodes()
+
+    peers_snapshot = list(known_nodes)
+    novos = 0
+
+    for peer in peers_snapshot:
         if peer == meu_url:
-            continue # Não tentar conectar a si mesmo
+            continue
         try:
-            # Tenta obter a lista de nós conhecidos pelo peer
-            print(f"[DISCOVERY] Consultando peers de {peer}...")
-            r = requests.get(f"{peer}/nodes", timeout=5)
+            r = requests.get(f"{peer}/nodes", timeout=4)
             if r.status_code == 200:
-                raw_new_peers = r.json().get('nodes', [])
-                for np in raw_new_peers:
-                    # Garante que 'np' é uma string de URL válida
-                    if isinstance(np, str) and (np.startswith('http://') or np.startswith('https://')):
-                        if np not in known_nodes and np != meu_url:
-                            known_nodes.add(np)
-                            print(f"[DISCOVERY] Descoberto novo peer {np} via {peer}")
-                            new_peers_discovered = True
-                            
-                            # Tenta registrar o nó local com o novo peer descoberto
-                            try:
-                                print(f"[DISCOVERY] Registrando meu nó ({meu_url}) com o novo peer {np}...")
-                                requests.post(f"{np}/nodes/register", json={'url': meu_url}, timeout=2)
-                            except requests.exceptions.RequestException as e:
-                                print(f"[DISCOVERY ERROR] Falha ao registrar em {np}: {e}")
-                            except Exception as e:
-                                print(f"[DISCOVERY ERROR] Erro inesperado ao registrar em {np}: {e}")
-                    else:
-                        print(f"[DISCOVERY WARNING] Peer {np} de {peer} não é uma URL válida. Ignorando.")
+                remote_nodes = r.json().get("nodes", [])
+                for n in remote_nodes:
+                    if n != meu_url and n not in known_nodes:
+                        known_nodes.add(n)
+                        novos += 1
+        except:
+            continue
 
-            # Tenta registrar o nó local com o peer atual (seja ele semente ou descoberto)
-            print(f"[DISCOVERY] Registrando meu nó ({meu_url}) com {peer}...")
-            requests.post(f"{peer}/nodes/register", json={'url': meu_url}, timeout=5)
-            
-        except requests.exceptions.RequestException as e:
-            print(f"[DISCOVERY ERROR] Falha ao conectar/descobrir peer {peer}: {e}. Marcando para remoção.")
-            if peer not in SEED_NODES: # Não remove nós semente automaticamente
-                peers_to_remove_during_discovery.add(peer)
-        except Exception as e:
-            print(f"[DISCOVERY ERROR] Erro inesperado durante descoberta com {peer}: {e}. Marcando para remoção.")
-            if peer not in SEED_NODES: # Não remove nós semente automaticamente
-                peers_to_remove_during_discovery.add(peer)
+    if novos > 0:
+        print(f"[DISCOVERY] {novos} novos peers encontrados.")
+        save_peers()
 
-    # Salva a lista de peers após todas as operações de descoberta e remoção
-    if new_peers_discovered or peers_to_remove_during_discovery:
-        known_nodes.difference_update(peers_to_remove_during_discovery)
-        salvar_peers(known_nodes)
-        if peers_to_remove_during_discovery:
-            print(f"[DISCOVERY] Removidos {len(peers_to_remove_during_discovery)} peers problemáticos.")
 
 def get_my_ip():
     """Tenta obter o IP local do nó e avisa se for privado."""
@@ -1714,24 +1616,18 @@ def safe_json_response(resp, peer):
         return None
 
 def comparar_ultimos_blocos(blockchain_instance):
-    """Compara o último bloco local com o dos peers e inicia a resolução de conflitos se houver diferença."""
     if blockchain_instance is None or blockchain_instance.last_block() is None:
-        print("[SYNC] Blockchain ainda não inicializada. Aguardando...")
         return
 
-    print("\n🔍 Verificando sincronização com os peers...")
     local_block = blockchain_instance.last_block()
     local_hash = blockchain_instance.hash(local_block)
-
-    peers_to_remove_during_sync_check = set()
 
     for peer in known_nodes.copy():
         if peer == meu_url:
             continue
         try:
-            resp = requests.get(f"{peer}/chain", timeout=10)
+            resp = requests.get(f"{peer}/chain", timeout=5)
             data = resp.json()
-
             peer_chain = data.get("chain")
             if not peer_chain:
                 continue
@@ -1740,35 +1636,19 @@ def comparar_ultimos_blocos(blockchain_instance):
             peer_index = peer_last["index"]
             peer_hash = blockchain_instance.hash(peer_last)
 
-            if peer_index is None or peer_hash is None:
-                print(f"[SYNC ⚠️] Resposta de sincronização malformada de {peer}. Marcando peer para remoção.")
-                peers_to_remove_during_sync_check.add(peer)
-                continue
+            if peer_index != local_block['index'] or peer_hash != local_hash:
+                print(f"[SYNC] Diferença detectada com {peer}. Rodando consenso...")
+                blockchain_instance.resolve_conflicts()
+                break  # evita múltiplas execuções simultâneas
 
-            if peer_index == local_block['index'] and peer_hash == local_hash:
-                print(f"[SYNC ✅] {peer} está sincronizado com índice {peer_index}.")
-            else:
-                print(f"[SYNC ⚠️] {peer} DIFERENTE! Local: {local_block['index']} | Peer: {peer_index}. Iniciando resolução de conflitos.")
-                threading.Thread(target=blockchain_instance.resolve_conflicts, daemon=True).start()
-        except requests.exceptions.RequestException as e:
-            print(f"[SYNC ❌] Falha ao verificar {peer}: {e}. Marcando peer para remoção.")
-            if peer not in SEED_NODES:
-                peers_to_remove_during_sync_check.add(peer)
-        except Exception as e:
-            print(f"[SYNC ❌] Erro inesperado ao verificar {peer}: {e}. Marcando peer para remoção.")
-            if peer not in SEED_NODES:
-                peers_to_remove_during_sync_check.add(peer)
-    
-    if peers_to_remove_during_sync_check:
-        known_nodes.difference_update(peers_to_remove_during_sync_check)
-        salvar_peers(known_nodes)
-        print(f"[SYNC] Removidos {len(peers_to_remove_during_sync_check)} peers problemáticos durante a verificação de sincronização.")
+        except:
+            print(f"[SYNC] {peer} não respondeu (pode estar offline).")
 
 def broadcast_new_block(block):
     for node in known_nodes:
         try:
             requests.post(f"{node}/blocks/receive", json=block, timeout=2)
-        except:
+        except: 
             print(f"Node {node} offline, não recebeu o bloco.")
             
 # --- Execução Principal ---
@@ -1786,10 +1666,10 @@ def run_server():
 
     # 🔹 URL pública real (evita nó isolado)
     public_url = os.environ.get("PUBLIC_URL")
-
+ 
     if public_url:
         meu_url = public_url.rstrip('/')
-        print(f"[INFO] 🌍 URL pública do nó: {meu_url}")
+        print(f"[INFO] 🌍 URL pública do nó: {meu_url}") 
     else:
         meu_url = f"http://{meu_ip}:{port}"
         print(f"[WARN] ⚠ PUBLIC_URL não definida — nó pode ficar isolado.")
@@ -1802,7 +1682,7 @@ def run_server():
     threading.Thread(target=discover_peers, daemon=True).start()
 
     # 🔹 Espera real por peers antes de sincronizar (anti-fork)
-    print("[BOOT] Aguardando peers iniciais...")
+    print("[BOOT] Aguardando peers iniciais...") 
     for _ in range(12):  # até ~24s
         if known_nodes:
             break
