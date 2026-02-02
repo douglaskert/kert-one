@@ -41,7 +41,12 @@ PEERS_FILE = 'peers.json'
 WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do cliente
 
 # --- NÓS SEMENTES (Mantenha a variável mesmo que use o GitHub) ---
-SEED_NODES = [] 
+SEED_NODES = [
+    "http://seend.kert-one.com",
+    "http://45.228.242.171:5000"
+    "http://seend2.kert-one.com"
+]
+
 GITHUB_NODES_URL = "https://raw.githubusercontent.com/douglaskert/kert-one/main/nodes.json"
 
 def fetch_github_nodes():
@@ -497,7 +502,7 @@ class Blockchain:
             chain.append(block)
         return chain
 
-    def new_block(self, proof, previous_hash, miner, initial_difficulty=None):
+    def new_block(self, proof, previous_hash, miner, initial_difficulty=None, timestamp=None):
         """Cria um novo bloco e o adiciona à cadeia."""
         block_index = len(self.chain) + 1
         reward = self._get_mining_reward(block_index)
