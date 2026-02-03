@@ -1709,6 +1709,6 @@ def run_server():
     print(f"[INFO] 🚀 Nó rodando na porta {port}")
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-
+ 
 if __name__ == "__main__":
     run_server()
