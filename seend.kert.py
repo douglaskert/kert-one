@@ -38,114 +38,64 @@ miner_address = None
 is_mining = False
 miner_lock = threading.Lock()
 
-# --- NÓS SEMENTES ---
-SEED_NODES = []
+# --- NÓS SEMENTES (Mantenha a variável mesmo que use o GitHub) ---
+SEED_NODES = [] 
 GITHUB_NODES_URL = "https://raw.githubusercontent.com/douglaskert/kert-one/main/nodes.json"
 
-known_nodes = set()
-meu_url = None   # será definido depois no run_server()
-
 def fetch_github_nodes():
-    global known_nodes, meu_url
+    global known_nodes
     try:
         r = requests.get(GITHUB_NODES_URL, timeout=5)
-
-        if r.status_code != 200:
-            print("[GITHUB] Falha ao acessar lista.")
-            return
-
-        try:
+        if r.status_code == 200:
             new_seeds = r.json()
-        except Exception as e:
-            print(f"[GITHUB] JSON inválido no nodes.json: {e}")
-            return
-
-        if not isinstance(new_seeds, list):
-            print("[GITHUB] nodes.json não é uma lista.")
-            return
-
-        adicionados = 0
-        for seed in new_seeds:
-            if isinstance(seed, str):
+            for seed in new_seeds:
                 seed = seed.strip()
-                if seed and seed != meu_url and seed not in known_nodes:
+                if seed and seed != meu_url:
                     known_nodes.add(seed)
-                    adicionados += 1
-
-        if adicionados:
-            save_peers()
-            print(f"🚀 [GITHUB] {adicionados} seeds adicionadas.")
-        else:
-            print("[GITHUB] Nenhum seed novo.")
-
-    except Exception as e:
-        print(f"⚠️ [GITHUB] Erro de rede: {e}")
-
-
+            
+            # ADICIONE ESTA LINHA AQUI EMBAIXO:
+            save_peers() 
+            print("🚀 [GITHUB] Lista salva em peers.json!")
+    except:
+        print("⚠️ [GITHUB] Erro ao buscar/salvar.")
 
 def save_peers():
+    global known_nodes
     try:
         with open(PEERS_FILE, 'w') as f:
             json.dump(sorted(list(known_nodes)), f, indent=2)
-        print(f"[PEERS] {len(known_nodes)} peers salvos.")
+        print(f"[PEERS] {len(known_nodes)} peers salvos em {PEERS_FILE}.")
     except Exception as e:
-        print(f"[PEERS ERRO] {e}")
-
-
-def load_peers():
-    if not os.path.exists(PEERS_FILE):
-        return
-    try:
-        with open(PEERS_FILE, 'r') as f:
-            for p in json.load(f):
-                if isinstance(p, str) and p.startswith("http"):
-                    known_nodes.add(p)
-        print(f"[PEERS] {len(known_nodes)} peers carregados.")
-    except Exception as e:
-        print(f"[PEERS ERRO] {e}")
-
-
-def discover_peers():
-    global known_nodes, meu_url
-    print("[DISCOVERY] Varredura de peers...")
-
-    load_peers()
-    fetch_github_nodes()
-
-    peers_snapshot = list(known_nodes)
-    novos = 0
-
-    for peer in peers_snapshot:
-        if peer == meu_url:
-            continue
-        try:
-            r = requests.get(f"{peer}/nodes", timeout=4)
-            if r.status_code == 200:
-                for n in r.json().get("nodes", []):
-                    if n != meu_url and n not in known_nodes:
-                        known_nodes.add(n)
-                        novos += 1
-        except:
-            continue
-
-    if novos > 0:
-        print(f"[DISCOVERY] {novos} novos peers.")
-        save_peers()
+        print(f"[PEERS ERRO] Falha ao salvar {PEERS_FILE}: {e}")
 
 
 def network_loop():
-    print("[NET] Thread de rede iniciada.")
     while True:
         try:
-            if blockchain:
-                discover_peers()
-                blockchain.resolve_conflicts()
+            discover_peers()
+            blockchain.resolve_conflicts()
         except Exception as e:
             print(f"[NETWORK] Erro: {e}")
         time.sleep(25)
 
-# ❌ REMOVIDO: NÃO INICIAR THREAD AQUI
-# threading.Thread(target=network_loop, daemon=True).start()
+threading.Thread(target=network_loop, daemon=True).start()
+
+
+def load_peers():
+    """Carrega peers SEM sobrescrever os atuais"""
+    if not os.path.exists(PEERS_FILE):
+        return
+    try:
+        with open(PEERS_FILE, 'r') as f:
+            peers = json.load(f)
+            for p in peers:
+                if isinstance(p, str) and p.startswith("http"):
+                    known_nodes.add(p)
+        print(f"[PEERS] {len(known_nodes)} peers ativos.")
+    except Exception as e:
+        print(f"[PEERS] erro ao carregar: {e}")
+
+
 # --- Na função discover_peers ou no início do programa ---
 # Chame fetch_external_seeds() logo após carregar o peers.json
 PROTOCOL_VERSION = "KERT-CORE-1.0"
@@ -256,6 +206,32 @@ threading.Thread(target=auto_sync, daemon=True).start()
 class Blockchain:
     ADJUST_INTERVAL = 2016 # Blocos para recalcular dificuldade
     TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
+    TARGET_WINDOW = ADJUST_INTERVAL * TARGET_TIME
+
+    def _calculate_difficulty_for_index(self, target_block_index):
+
+        # Só ajusta em múltiplos de 2016
+        if target_block_index % self.ADJUST_INTERVAL != 0:
+            return self.chain[-1].get('difficulty', DIFFICULTY)
+
+        if len(self.chain) < self.ADJUST_INTERVAL:
+            return DIFFICULTY
+    
+        last_block = self.chain[-1]
+        first_block = self.chain[-self.ADJUST_INTERVAL]
+
+        actual_time = last_block['timestamp'] - first_block['timestamp']
+        expected_time = self.ADJUST_INTERVAL * self.TARGET_TIME
+
+        # Limite estilo Bitcoin (¼x a 4x)
+        actual_time = max(expected_time // 4, min(actual_time, expected_time * 4))
+
+        old_diff = last_block['difficulty']
+        new_diff = int(old_diff * (expected_time / actual_time))
+
+        print(f"[DIFF BITCOIN] antiga={old_diff} nova={new_diff}")
+
+        return max(1, new_diff)
 
     def __init__(self, conn, node_id):
         self.conn = conn
@@ -738,51 +714,6 @@ class Blockchain:
                     return False
 
         return True
-
-
-    def _calculate_difficulty_for_index(self, target_block_index):
-        """
-        Calcula a dificuldade esperada para um dado índice de bloco.
-        Implementa o ajuste de dificuldade do Bitcoin.
-        """
-        if target_block_index <= self.ADJUST_INTERVAL:
-            return DIFFICULTY
-
-        # Se a cadeia ainda não tem blocos suficientes para o intervalo de ajuste,
-        # usa a dificuldade do último bloco ou a dificuldade padrão.
-        if len(self.chain) < self.ADJUST_INTERVAL:
-            return self.chain[-1].get('difficulty', DIFFICULTY) if self.chain else DIFFICULTY
-
-        # Índices dos blocos que definem a janela de tempo para o cálculo da dificuldade
-        start_block_for_calc_index = len(self.chain) - self.ADJUST_INTERVAL
-        end_block_for_calc_index = len(self.chain) - 1
-
-        # Garantir que os índices estão dentro dos limites da cadeia existente
-        if start_block_for_calc_index < 0 or end_block_for_calc_index >= len(self.chain):
-            # Isso pode acontecer se a cadeia for muito curta para o intervalo de ajuste
-            # Neste caso, usamos a dificuldade do último bloco ou a dificuldade padrão.
-            return self.chain[-1].get('difficulty', DIFFICULTY) if self.chain else DIFFICULTY
-
-        start_block_for_calc = self.chain[start_block_for_calc_index]
-        end_block_for_calc = self.chain[end_block_for_calc_index]
-
-        actual_window_time = end_block_for_calc['timestamp'] - start_block_for_calc['timestamp']
-        expected_time = self.TARGET_TIME * self.ADJUST_INTERVAL
-
-        current_calculated_difficulty = end_block_for_calc.get('difficulty', DIFFICULTY)
-
-        new_difficulty = current_calculated_difficulty
-        # Ajusta a dificuldade com base no tempo real vs. tempo esperado
-        if actual_window_time < expected_time / 4:
-            new_difficulty += 2
-        elif actual_window_time < expected_time / 2:
-            new_difficulty += 1
-        elif actual_window_time > expected_time * 4 and new_difficulty > 1:
-            new_difficulty -= 2
-        elif actual_window_time > expected_time * 2 and new_difficulty > 1:
-            new_difficulty -= 1
-        
-        return max(1, new_difficulty) # Dificuldade mínima é 1
 
     def get_total_difficulty(self, chain_to_check):
         """Calcula a dificuldade acumulada de uma cadeia."""
@@ -1578,6 +1509,39 @@ def broadcast_block(block):
         salvar_peers(known_nodes)
         print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
 
+def discover_peers():
+    global known_nodes, meu_url
+
+    print("[DISCOVERY] Iniciando varredura de peers...")
+
+    # 1. Carrega seeds locais
+    load_peers()
+
+    # 2. Busca seeds GitHub
+    fetch_github_nodes()
+
+    peers_snapshot = list(known_nodes)
+    novos = 0
+
+    for peer in peers_snapshot:
+        if peer == meu_url:
+            continue
+        try:
+            r = requests.get(f"{peer}/nodes", timeout=4)
+            if r.status_code == 200:
+                remote_nodes = r.json().get("nodes", [])
+                for n in remote_nodes:
+                    if n != meu_url and n not in known_nodes:
+                        known_nodes.add(n)
+                        novos += 1
+        except:
+            continue
+
+    if novos > 0:
+        print(f"[DISCOVERY] {novos} novos peers encontrados.")
+        save_peers()
+
+
 def get_my_ip():
     """Tenta obter o IP local do nó e avisa se for privado."""
     try:
@@ -1672,7 +1636,7 @@ def broadcast_new_block(block):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 8001))
+    port = int(os.environ.get('PORT', 5001))
 
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
