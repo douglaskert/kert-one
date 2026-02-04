@@ -40,63 +40,124 @@ COIN_SYMBOL = "KERT"
 PEERS_FILE = 'peers.json'
 WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do cliente
 
-# --- NÓS SEMENTES (Mantenha a variável mesmo que use o GitHub) ---
+# ==================== CONFIG REDE KERT ====================
+
 SEED_NODES = [
-    "http://seend.kert-one.com",
-    "http://45.228.242.171:5000"
-    "http://seend2.kert-one.com"
+  "https://seend.kert-one.com",
+  "https://seend2.kert-one.com",
+  "http://seend3.kert-one.com:8001"
 ]
 
 GITHUB_NODES_URL = "https://raw.githubusercontent.com/douglaskert/kert-one/main/nodes.json"
 
-def fetch_github_nodes():
-    """Busca a lista oficial de IPs no GitHub"""
-    global known_nodes, meu_url
+known_nodes = set(SEED_NODES)
+meu_url = None
+meu_ip = None
+port = None
+
+# ---------------- IP HELPERS ----------------
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        print(f"📡 [GITHUB] Verificando sementes em: {GITHUB_NODES_URL}")
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    finally:
+        s.close()
+    return ip
+
+def is_private_ip(ip):
+    return ipaddress.ip_address(ip).is_private
+
+# ---------------- URL DO NÓ ----------------
+
+def configure_node_url(port_number):
+    global meu_url, meu_ip
+
+    public_url = os.environ.get("PUBLIC_URL")
+    meu_ip = get_local_ip()
+
+    if public_url:
+        meu_url = public_url
+        print(f"🌍 URL pública: {meu_url}")
+    else:
+        if is_private_ip(meu_ip):
+            print(f"[AVISO] IP privado detectado ({meu_ip}).")
+            print("Use port forwarding ou defina PUBLIC_URL.")
+        meu_url = f"http://{meu_ip}:{port_number}"
+
+    print(f"[INFO] Node URL: {meu_url}")
+
+# ---------------- PEERS PERSISTÊNCIA ----------------
+
+def save_peers():
+    try:
+        with open(PEERS_FILE, 'w') as f:
+            json.dump(sorted(list(known_nodes)), f, indent=2)
+    except:
+        pass
+
+def load_peers():
+    if not os.path.exists(PEERS_FILE):
+        return
+    try:
+        with open(PEERS_FILE, 'r') as f:
+            for p in json.load(f):
+                if isinstance(p, str) and p.startswith("http"):
+                    known_nodes.add(p)
+    except:
+        pass
+
+# ---------------- GITHUB SEEDS (OPCIONAL) ----------------
+
+def fetch_github_nodes():
+    try:
         r = requests.get(GITHUB_NODES_URL, timeout=5)
-        if r.status_code == 200:
-            new_seeds = r.json()
-            added = 0
-            for seed in new_seeds:
-                seed = seed.strip()
-                if seed and seed != meu_url and seed not in known_nodes:
-                    known_nodes.add(seed)
-                    added += 1
-            if added > 0:
-                print(f"🚀 [GITHUB] {added} novos peers adicionados do repositório!")
-                save_peers()
-    except Exception as e:
-        print(f"⚠️ [GITHUB] Erro ao acessar repositório: {e}")
+        seeds = r.json()
+        for seed in seeds:
+            if isinstance(seed, str) and seed.startswith("http") and seed != meu_url:
+                known_nodes.add(seed)
+    except:
+        print("[GITHUB] Ignorando seeds externas.")
+
+# ---------------- DESCOBERTA ----------------
 
 def discover_peers():
-    """Lógica de descoberta unificada"""
-    global known_nodes, meu_url
-    print("🔍 [SYNC] Iniciando descoberta de rede...")
-    
-    # 1. Carrega o que já conhece localmente
-    load_peers() 
-    
-    # 2. Busca novidades no GitHub
+    print("[DISCOVERY] Atualizando peers...")
+
+    load_peers()
     fetch_github_nodes()
-    
-    # 3. Testa quem está online e descobre vizinhos dos vizinhos
-    current_peers = list(known_nodes)
-    for peer in current_peers:
-        if peer == meu_url: continue
+
+    snapshot = list(known_nodes)
+    for peer in snapshot:
+        if peer == meu_url:
+            continue
         try:
-            # Tenta pegar a lista de nós desse peer
-            response = requests.get(f"{peer}/nodes", timeout=3)
-            if response.status_code == 200:
-                print(f"✅ Peer ativo encontrado: {peer}")
-                # Opcional: Adicionar os vizinhos que ele conhece
-                nodes_from_peer = response.json().get('nodes', [])
-                for n in nodes_from_peer:
-                    if n != meu_url: known_nodes.add(n)
+            r = requests.get(f"{peer}/nodes", timeout=3)
+            for n in r.json().get("nodes", []):
+                if isinstance(n, str) and n.startswith("http"):
+                    known_nodes.add(n)
         except:
-            print(f"⚠️ Peer {peer} inacessível no momento.")
-    
+            continue
+
     save_peers()
+
+# ---------------- LOOP REDE ----------------
+
+def network_loop():
+    print("[NET] Sistema P2P ativo.")
+    while True:
+        try:
+            if blockchain:
+                discover_peers()
+                blockchain.resolve_conflicts()
+        except Exception as e:
+            print(f"[NETWORK] {e}")
+        time.sleep(25)
+
+
+PROTOCOL_VERSION = "KERT-CORE-1.0"
+
 # --- Na função discover_peers ou no início do programa ---
 # Chame fetch_external_seeds() logo após carregar o peers.json
 # ================= PROTOCOLO ECONÔMICO (TRAVAMENTO) =================
@@ -106,8 +167,6 @@ PROTOCOL_RULES = {
     "value_formula": "difficulty * reward * cost_factor",
     "cost_factor": 10
 }
-
-PROTOCOL_VERSION = "KERT-ECON-V1"
 
 PROTOCOL_HASH = hashlib.sha256(
     json.dumps(PROTOCOL_RULES, sort_keys=True).encode()
