@@ -2211,23 +2211,46 @@ class KertOneCoreClient(QMainWindow):
         self.log_signal.emit("Mineração contínua parada.", "info")
 
     def _mine_async(self, miner_address):
-        """Método que define o endereço do minerador e executa a mineração em thread separada."""
+        """Define o endereço do minerador e executa mineração em thread."""
         try:
-            self.log_signal.emit(f"Definindo endereço do minerador no nó...", "info")
-            set_addr_response = requests.post(f"{meu_url}/miner/set_address", json={"address": miner_address}, timeout=10)
+            self.log_signal.emit("🔧 Configurando endereço do minerador...", "info")
+            set_addr_response = requests.post(
+                f"{meu_url}/miner/set_address",
+                json={"address": miner_address},
+                timeout=10
+            )
             set_addr_response.raise_for_status()
 
-            self.log_signal.emit(f"Endereço definido: {miner_address}. Iniciando mineração...", "info")
+            self.log_signal.emit(f"⛏️ Minerador ativo: {miner_address}. Iniciando ciclo...", "info")
 
             response = requests.get(f"{meu_url}/mine", timeout=30)
+
+            # 🔹 Caso NORMAL de rede (outro nó ganhou)
+            if response.status_code == 409:
+                self.log_signal.emit(
+                    "🔄 Outro nó validou o bloco primeiro. Sincronizando próximo ciclo...",
+                    "info"
+                )
+                return
+
+            # 🔹 Erros reais
             response.raise_for_status()
 
             result = response.json()
-            self.log_signal.emit(f"✅ Bloco minerado com sucesso: {result.get('message', '')}", "success")
+            self.log_signal.emit(
+                f"✅ Bloco minerado com sucesso: {result.get('message', '')}",
+                "success"
+            )
             self.check_wallet_balance()
 
+        except requests.exceptions.Timeout:
+            self.log_signal.emit("⏳ Tempo de resposta do nó excedido. Tentando novamente...", "warning")
+
+        except requests.exceptions.ConnectionError:
+            self.log_signal.emit("🌐 Nó fora de alcance. Verificando conexão...", "error")
+
         except requests.exceptions.RequestException as e:
-            self.log_signal.emit(f"Dificuldade alta: {e}. Minerando o próximo bloco...", "error")
+            self.log_signal.emit(f"⚠️ Falha inesperada na mineração: {e}", "error")
 
 
     def mine_block_via_api(self):
