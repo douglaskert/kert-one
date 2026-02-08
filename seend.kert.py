@@ -578,30 +578,39 @@ class Blockchain:
 
     def proof_of_work(self, last_proof):
         """
-        Encontra uma prova de trabalho que satisfaça os requisitos de dificuldade.
-        Retorna a prova (nonce) ou -1 se a mineração for abortada.
+        Encontra uma prova de trabalho. 
+        OTIMIZADO: Libera a CPU periodicamente para não travar o Flask.
         """
         difficulty_for_pow = self._calculate_difficulty_for_index(len(self.chain) + 1)
         proof = 0
-        print(f"Iniciando mineração com dificuldade {difficulty_for_pow}...")
+        print(f"⛏️  [MINER] Iniciando mineração. Dificuldade: {difficulty_for_pow}")
         start_time = time.time()
         
         while not self.valid_proof(last_proof, proof, difficulty_for_pow):
-            global mining_active # Usa a variável de controle da mineração contínua
-            if not mining_active: # Verifica o flag de mineração
-                print("[Miner] Sinal para parar recebido durante PoW. Abortando mineração.")
+            global mining_active
+            if not mining_active:
+                print("[Miner] 🛑 Mineração parada manualmente.")
                 return -1
             
-            # Verifica se um novo bloco chegou enquanto estamos minerando
-            # Isso é crucial para evitar mineração em uma cadeia desatualizada
+            # --- CORREÇÃO CRÍTICA AQUI ---
+            # A cada 1000 hashes, dorme 1ms para o Flask processar requisições de rede
+            if proof % 1000 == 0:
+                time.sleep(0.001) 
+            
+            # Verifica se outro nó já achou o bloco (evita trabalho inútil)
             if self.last_block()['proof'] != last_proof:
-                print("[Miner] Outro bloco chegou na cadeia principal durante PoW. Abortando e reiniciando.")
+                print("[Miner] ⚠️ Outro bloco chegou na rede. Reiniciando mineração.")
                 return -1
 
-            if time.time() - start_time > 10 and proof % 100000 == 0:
-                print(f" Tentativa: {proof}")
+            # Log de progresso a cada 10 segundos
+            if time.time() - start_time > 10:
+                hash_rate = proof / (time.time() - start_time)
+                print(f"🔨 [MINER] Hashrate: {hash_rate:.2f} H/s | Tentativa: {proof}")
+                start_time = time.time() # Reseta timer do log para não floodar
+                
             proof += 1
-        print(f"Mineração concluída: proof = {proof}")
+            
+        print(f"💎 [MINER] Bloco encontrado! Proof: {proof}")
         return proof
 
     @staticmethod
@@ -987,6 +996,57 @@ def chain_api():
     }
     return jsonify(response), 200
 
+# --- ADICIONE ISTO NO FINAL DO SEU KERT.PY (Antes do if __name__) ---
+
+@app.route('/wallet/admin_send', methods=['POST'])
+def admin_send_coins():
+    """Endpoint exclusivo para o PHP mandar moedas usando a chave privada"""
+    try:
+        data = request.get_json()
+        private_key = data.get('private_key') # Chave mestra que vem do PHP
+        recipient = data.get('recipient')
+        amount = data.get('amount')
+
+        if not private_key or not recipient or not amount:
+            return jsonify({'erro': 'Faltam dados'}), 400
+
+        # 1. Recupera a carteira a partir da chave privada
+        sk = SigningKey.from_string(bytes.fromhex(private_key), curve=SECP256k1)
+        vk = sk.get_verifying_key()
+        public_key = "04" + vk.to_string().hex()
+        sender_addr = gerar_endereco(public_key)
+ 
+        # 2. Verifica Saldo do Admin
+        saldo_admin = blockchain.balance(sender_addr)
+        if saldo_admin < float(amount):
+            return jsonify({'erro': f'Saldo insuficiente no Admin. Tem: {saldo_admin}'}), 400
+
+        # 3. Cria a Transação
+        tx = {
+            'id': str(uuid4()),
+            'sender': sender_addr,
+            'recipient': recipient,
+            'amount': f"{float(amount):.8f}",
+            'fee': "0.00001000", # Taxa baixa para o sistema
+            'public_key': public_key,
+            'timestamp': time.time(),
+            'signature': ''
+        }
+
+        # 4. Assina
+        tx['signature'] = sign_transaction(private_key, tx)
+
+        # 5. Adiciona na Blockchain e Espalha
+        blockchain.current_transactions.append(tx)
+        broadcast_tx_to_peers(tx)
+
+        print(f"[ADMIN] Enviado {amount} KERT para {recipient}")
+        return jsonify({'sucesso': True, 'tx_id': tx['id']}), 200
+
+    except Exception as e:
+        print(f"[ERRO ADMIN] {e}")
+        return jsonify({'erro': str(e)}), 500
+        
 @app.route('/nodes/register', methods=['POST'])
 def register_nodes_api():
     """
@@ -1511,36 +1571,34 @@ def broadcast_block(block):
 
 def discover_peers():
     global known_nodes, meu_url
+    # print("[DISCOVERY] Varrendo peers...") # Comentado para poluir menos o log
 
-    print("[DISCOVERY] Iniciando varredura de peers...")
-
-    # 1. Carrega seeds locais
-    load_peers()
-
-    # 2. Busca seeds GitHub
-    fetch_github_nodes()
+    # Carrega seeds se necessário
+    if len(known_nodes) < 1:
+        load_peers()
+        fetch_github_nodes()
 
     peers_snapshot = list(known_nodes)
-    novos = 0
+    peers_to_remove = set() # Lista para remover nós mortos
 
     for peer in peers_snapshot:
         if peer == meu_url:
             continue
         try:
-            r = requests.get(f"{peer}/nodes", timeout=4)
+            # TIMEOUT REDUZIDO PARA 2 SEGUNDOS
+            # Se o peer não responder rápido, ignoramos para não travar a mineração
+            r = requests.get(f"{peer}/nodes", timeout=2)
+            
             if r.status_code == 200:
                 remote_nodes = r.json().get("nodes", [])
                 for n in remote_nodes:
                     if n != meu_url and n not in known_nodes:
                         known_nodes.add(n)
-                        novos += 1
         except:
-            continue
+            # Se der erro, apenas ignora, não remove imediatamente para não perder seeds temporariamente offline
+            pass
 
-    if novos > 0:
-        print(f"[DISCOVERY] {novos} novos peers encontrados.")
-        save_peers()
-
+    save_peers()
 
 def get_my_ip():
     """Tenta obter o IP local do nó e avisa se for privado."""
@@ -1636,7 +1694,7 @@ def broadcast_new_block(block):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 5001))
+    port = int(os.environ.get('PORT', 8001))
 
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
