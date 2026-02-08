@@ -37,6 +37,7 @@ GENESIS_PREVIOUS_HASH = "1"
 miner_address = None
 is_mining = False
 miner_lock = threading.Lock()
+tx_lock = threading.Lock() # <--- ADICIONE ISTO
 
 # --- NÓS SEMENTES (Mantenha a variável mesmo que use o GitHub) ---
 SEED_NODES = [] 
@@ -842,20 +843,32 @@ class Blockchain:
 
 
     def balance(self, address):
-        """Calcula o saldo de um endereço, incluindo transações pendentes."""
+        """Calcula o saldo ignorando transações pendentes que já foram mineradas."""
         bal = 0.0
+        mined_tx_ids = set() # Guarda os IDs que já estão na blockchain
+
+        # 1. Soma tudo que já está gravado nos Blocos (Confirmado)
         for block in self.chain:
             for t in block['transactions']:
+                mined_tx_ids.add(t['id']) # Marca esse ID como processado
+                
                 if t['sender'] == address:
                     bal -= (float(t['amount']) + float(t['fee']))
                 if t['recipient'] == address:
                     bal += float(t['amount'])
         
+        # 2. Soma o que está Pendente (MAS verifica se já não foi processado antes)
         for t in self.current_transactions:
+            # --- AQUI ESTÁ A CORREÇÃO ---
+            if t['id'] in mined_tx_ids:
+                continue # Se já está no bloco, ignora aqui para não contar duas vezes!
+            # -----------------------------
+
             if t['sender'] == address:
                 bal -= (float(t['amount']) + float(t['fee']))
             if t['recipient'] == address:
                 bal += float(t['amount'])
+                
         return bal
 
 # --- Funções de Criptografia e Carteira ---
@@ -1110,6 +1123,8 @@ def pending_transactions():
 @app.route('/tx/new', methods=['POST'])
 def new_transaction_api():
     """Recebe uma nova transação do cliente e a adiciona à fila pendente."""
+    
+    # --- 1. Parsing e Validação Básica ---
     raw_values = None
     try:
         raw_values = request.get_json(silent=True)
@@ -1117,55 +1132,39 @@ def new_transaction_api():
         print(f"DEBUG_SERVER: ERRO - Exceção durante o parsing JSON: {e}")
     
     if raw_values is None:
-        print(f"DEBUG_SERVER: ERRO - request.get_json() retornou None. Verifique o Content-Type ou a validade do JSON.")
-        return jsonify({'message': 'Erro: Não foi possível parsear o JSON da requisição. Verifique o Content-Type ou a validade do JSON.'}), 400
+        print(f"DEBUG_SERVER: ERRO - request.get_json() retornou None.")
+        return jsonify({'message': 'Erro: JSON inválido.'}), 400
     
     values = raw_values
-
     required = ['id', 'sender', 'recipient', 'amount', 'fee', 'public_key', 'signature']
     if not all(k in values for k in required):
         missing = [k for k in required if k not in values]
-        print(f"[ERRO 400] Valores ausentes na transação: {missing}")
-        return jsonify({'message': f'Valores ausentes na requisição: {", ".join(missing)}'}), 400
+        return jsonify({'message': f'Valores ausentes: {", ".join(missing)}'}), 400
 
     try:
         amount_float = float(values['amount'])
         fee_float = float(values['fee'])
-        amount_str_formatted = f"{amount_float:.8f}"
-        fee_str_formatted = f"{fee_float:.8f}"
-
+        
         if fee_float <= 0:
-            print(f"[ERRO 400] Taxa de transação inválida: {fee_float}. A taxa deve ser maior que 0.")
-            return jsonify({'message': 'Taxa de transação inválida. A taxa deve ser maior que 0.'}), 400
+            return jsonify({'message': 'Taxa deve ser maior que 0.'}), 400
 
+        # Formatação padronizada
         transaction = {
             'id': values['id'],
             'sender': values['sender'],
             'recipient': values['recipient'],
-            'amount': amount_str_formatted,
-            'fee': fee_str_formatted,
+            'amount': f"{amount_float:.8f}",
+            'fee': f"{fee_float:.8f}",
             'public_key': values['public_key'],
             'signature': values['signature'],
-            'timestamp': values.get('timestamp', time.time()) # Usar timestamp fornecido ou atual
+            'timestamp': values.get('timestamp', time.time())
         }
     except ValueError as e:
-        print(f"[ERRO 400] Erro de conversão de tipo na transação: {e}")
-        return jsonify({'message': f'Erro ao processar dados numéricos da transação: {e}'}), 400
+        return jsonify({'message': f'Erro em dados numéricos: {e}'}), 400
     except Exception as e:
-        print(f"[ERRO 400] Erro inesperado ao construir transação: {e}")
-        return jsonify({'message': f'Erro ao processar dados da transação: {e}'}), 400
+        return jsonify({'message': f'Erro ao processar dados: {e}'}), 400
 
-    temp_tx_for_duplicate_check = {
-        'sender': transaction['sender'],
-        'recipient': transaction['recipient'],
-        'amount': transaction['amount'],
-        'fee': transaction['fee'],
-        'id': transaction.get('id')
-    }
-    if blockchain.is_duplicate_transaction(temp_tx_for_duplicate_check):
-        print(f"[AVISO] Transação duplicada detectada para {transaction['sender']} -> {transaction['recipient']}. Ignorando.")
-        return jsonify({'message': 'Transação duplicada detectada. Não adicionada novamente.'}), 200
-
+    # --- 2. Validação Criptográfica (Pesada - Fica FORA do Lock) ---
     try:
         pk_for_address_derivation = transaction['public_key']
         if isinstance(pk_for_address_derivation, str) and pk_for_address_derivation.startswith('04') and len(pk_for_address_derivation) == 130:
@@ -1173,33 +1172,54 @@ def new_transaction_api():
         
         derived_address = hashlib.sha256(bytes.fromhex(pk_for_address_derivation)).hexdigest()[:40] 
         if derived_address != transaction['sender']:
-            print(f"[ERRO 400] Assinatura inválida: Endereço do remetente ({transaction['sender']}) não corresponde à chave pública fornecida ({derived_address}).")
-            return jsonify({'message': 'Assinatura inválida: Endereço do remetente não corresponde à chave pública fornecida'}), 400
+            return jsonify({'message': 'Assinatura inválida: Endereço não corresponde à chave pública'}), 400
 
         if not verify_signature(transaction['public_key'], transaction['signature'], transaction):
-            print(f"[ERRO 400] Assinatura inválida ou chave pública malformada para TX ID: {transaction.get('id')}")
-            return jsonify({'message': 'Assinatura inválida ou chave pública malformada: Falha na verificação da assinatura'}), 400
+            return jsonify({'message': 'Assinatura inválida.'}), 400
             
     except Exception as e:
-        print(f"[ERRO 400] Erro inesperado na validação da assinatura: {e}. TX ID: {transaction.get('id')}")
-        return jsonify({'message': f'Erro inesperado na validação da transação: {e}'}), 400
+        print(f"[ERRO 400] Erro na validação de assinatura: {e}")
+        return jsonify({'message': f'Erro na validação de assinatura: {e}'}), 400
 
-    current_balance = blockchain.balance(transaction['sender'])
-    required_amount = float(transaction['amount']) + float(transaction['fee'])
-    if current_balance < required_amount:
-        print(f"[ERRO 400] Saldo insuficiente para {transaction['sender']}: Necessário {required_amount}, Disponível {current_balance}. TX ID: {transaction.get('id')}")
-        return jsonify({'message': f'Saldo insuficiente para a transação. Saldo atual: {current_balance}, Necessário: {required_amount}'}), 400
-
-    blockchain.current_transactions.append(transaction)
+    # --- 3. SEÇÃO CRÍTICA (Protegida contra Envio Duplo) ---
+    # Aqui usamos o tx_lock para impedir que duas threads insiram a mesma TX ao mesmo tempo
     
+    with tx_lock:
+        # A. Verifica Duplicidade (Dentro do Lock)
+        temp_tx_for_duplicate_check = {
+            'sender': transaction['sender'],
+            'recipient': transaction['recipient'],
+            'amount': transaction['amount'],
+            'fee': transaction['fee'],
+            'id': transaction.get('id')
+        }
+        
+        if blockchain.is_duplicate_transaction(temp_tx_for_duplicate_check):
+            print(f"[AVISO] Transação duplicada bloquada pelo Lock: {transaction['id']}")
+            return jsonify({'message': 'Transação duplicada detectada.'}), 200
+
+        # B. Verifica Saldo (Dentro do Lock)
+        current_balance = blockchain.balance(transaction['sender'])
+        required_amount = float(transaction['amount']) + float(transaction['fee'])
+        
+        if current_balance < required_amount:
+            print(f"[ERRO] Saldo insuficiente. Tem: {current_balance}, Precisa: {required_amount}")
+            return jsonify({'message': f'Saldo insuficiente. Saldo: {current_balance}'}), 400
+
+        # C. Adiciona à Lista (Sucesso)
+        blockchain.current_transactions.append(transaction)
+        print(f"[SUCESSO] Transação {transaction['id']} adicionada.")
+
+    # --- 4. Broadcast (Fora do Lock para não travar o servidor) ---
     broadcast_tx_to_peers(transaction)
 
-    response = {'message': f'Transação {transaction["id"]} adicionada à fila de transações pendentes.',
-                'coin_name': COIN_NAME,
-                'coin_symbol': COIN_SYMBOL,
-                'transaction_id': transaction['id']}
+    response = {
+        'message': f'Transação {transaction["id"]} adicionada à fila.',
+        'coin_name': COIN_NAME,
+        'coin_symbol': COIN_SYMBOL,
+        'transaction_id': transaction['id']
+    }
     return jsonify(response), 201
-
 
 def broadcast_tx_to_peers(tx):
     """Envia uma transação para todos os peers conhecidos."""
