@@ -815,18 +815,15 @@ class Blockchain:
                     (index_, previous_hash, proof, timestamp, miner, difficulty, protocol_value)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    block['index'],
-                    block['previous_hash'],
-                    block['proof'],
-                    block['timestamp'],
-                    block['miner'],
-                    block.get('difficulty', DIFFICULTY),
+                    block['index'], block['previous_hash'], block['proof'],
+                    block['timestamp'], block['miner'], block.get('difficulty', 1),
                     block.get('protocol_value', 0.0)
                 ))
 
                 for tx in block['transactions']:
+                    # MUDANÇA AQUI: Adicionado "OR IGNORE" para evitar o erro de ID duplicado
                     c.execute("""
-                        INSERT INTO txs
+                        INSERT OR IGNORE INTO txs
                         (id, sender, recipient, amount, fee, signature, block_index, public_key)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
@@ -836,11 +833,8 @@ class Blockchain:
 
             self.conn.commit()
             print("[REBUILD] OK")
-
         except Exception as e:
             print(f"[REBUILD ERRO] {e}")
-            sys.exit(1)
-
 
     def balance(self, address):
         """Calcula o saldo ignorando transações pendentes que já foram mineradas."""
@@ -1308,6 +1302,16 @@ def receive_transaction_api():
     except Exception as e:
         print(f"[RECEIVE TX ERROR] Erro inesperado ao processar TX {tx_data.get('id')}: {e}")
         return jsonify({'message': f'Erro interno ao processar transação: {e}'}), 500
+
+from web3 import Web3
+
+# --- CONFIGURAÇÕES DA PONTE ---
+ETH_RPC_URL = "https://rpc.ankr.com/eth" # Ou Infura/Alchemy
+WKERT_CONTRACT = "0x12f40def427635c896d65bf5934d04654da29190"
+ADMIN_PRIVATE_KEY_ETH = "e7b2b7720bb46798bfa65ccd06502d657acc4e3954a7b0149993952d1cfe0098" # Para enviar WKERT
+ADMIN_KERT_ADDR = "3e128f4c1045cb2cf7ad48215c421824207b7905" # Seu cofre nativo
+
+w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL))
         
 def verify_signature(public_key_hex, signature_hex, tx_data):
     """
@@ -1714,7 +1718,7 @@ def broadcast_new_block(block):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 8001))
+    port = int(os.environ.get('PORT', 5001))
 
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
