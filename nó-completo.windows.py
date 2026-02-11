@@ -112,23 +112,25 @@ class Blockchain:
 
     @staticmethod
     def hash(block):
-        """DNA do bloco: deve ser IDÊNTICO ao do servidor para sincronizar."""
+        # Garante que protocol_value entre na conta do Hash
         block_core = {
             "index": block["index"],
             "previous_hash": block["previous_hash"],
             "proof": block["proof"],
             "timestamp": block["timestamp"],
             "miner": block["miner"],
-            "difficulty": block.get("difficulty", 1),
-            "protocol_value": block.get("protocol_value", 500.0), # Valor base de consenso
+            "difficulty": block.get("difficulty", 1), # Garante campo
+            "protocol_value": block.get("protocol_value", 0), # <--- CRÍTICO
             "transactions": block["transactions"]
         }
-        # sort_keys e separators garantem que o JSON seja idêntico em qualquer PC
+
+        # Ordena as chaves para garantir que o hash seja sempre o mesmo
         block_string = json.dumps(
             block_core, 
             sort_keys=True, 
             separators=(',', ':')
         ).encode()
+
         return hashlib.sha256(block_string).hexdigest()
 
     def is_duplicate_transaction(self, new_tx):
