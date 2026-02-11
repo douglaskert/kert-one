@@ -11,6 +11,10 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Kert-One">
 
+    <!-- Ícones (GitHub Raw Link) -->
+    <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/douglaskert/kert-one/main/kertone.png">
+    <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/douglaskert/kert-one/main/kertone.png">
+
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
     <script src="https://unpkg.com/html5-qrcode"></script>
@@ -89,6 +93,9 @@
     
     <!-- Script para gerar o Manifesto PWA dinamicamente -->
     <script>
+        // Usando o link RAW da imagem do GitHub para garantir que carregue como imagem
+        const iconUrl = "https://raw.githubusercontent.com/douglaskert/kert-one/main/kertone.png";
+        
         const pwaManifest = {
             "name": "Kert-One App",
             "short_name": "Kert-One",
@@ -99,12 +106,12 @@
             "theme_color": "#FF7A00",
             "icons": [
                 {
-                    "src": "https://ui-avatars.com/api/?name=K&background=FF7A00&color=fff&rounded=true&size=192",
+                    "src": iconUrl,
                     "sizes": "192x192",
                     "type": "image/png"
                 },
                 {
-                    "src": "https://ui-avatars.com/api/?name=K&background=FF7A00&color=fff&rounded=true&size=512",
+                    "src": iconUrl,
                     "sizes": "512x512",
                     "type": "image/png"
                 }
@@ -160,12 +167,7 @@
 
             <!-- AUTH TAB (Tela Inicial) -->
             <div id="auth" class="tab active pt-8 px-5 text-center">
-                <div class="w-24 h-24 bg-inter-orange rounded-[2.5rem] mx-auto flex items-center justify-center shadow-2xl shadow-orange-200 rotate-3">
-    <img src="https://raw.githubusercontent.com/douglaskert/kert-one/main/kertone.png"
-         class="w-16 h-16 object-contain"
-         alt="Kert-One Logo">
-</div>
-
+                <div class="w-24 h-24 bg-inter-orange rounded-[2.5rem] mx-auto flex items-center justify-center text-white text-5xl font-black mb-6 shadow-2xl shadow-orange-200 rotate-3">K</div>
                 <h2 class="text-3xl font-extrabold text-gray-900 mb-2">Kert-One</h2>
                 <p class="text-gray-500 mb-10">O banco digital da nova geração.</p>
                 
@@ -187,7 +189,7 @@
                 
                 <p class="mt-12 text-[11px] text-gray-400 leading-relaxed">
                     Sistema recomendado para empresas:<br>
-                    <a href="https://kert-one.com/" target="_blank" class="text-orange-500 font-bold hover:underline">Kert-One - Soluções Completas</a>
+                    <a href="https://genesisaas.com.br/" target="_blank" class="text-orange-500 font-bold hover:underline">Genesis SaaS - Soluções Completas</a>
                 </p>
             </div>
 
