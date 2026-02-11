@@ -233,37 +233,39 @@ def auto_sync():
 threading.Thread(target=periodic_network_maintenance, daemon=True).start()
 threading.Thread(target=auto_sync, daemon=True).start()
 
-
-
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 2016 # Blocos para recalcular dificuldade
-    TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
-    TARGET_WINDOW = ADJUST_INTERVAL * TARGET_TIME
+    ADJUST_INTERVAL = 50 # Janela curta para ajuste rápido
+    TARGET_TIME = 60    # 1 minuto por bloco
 
     def _calculate_difficulty_for_index(self, target_block_index):
-
-        # Só ajusta em múltiplos de 2016
-        if target_block_index % self.ADJUST_INTERVAL != 0:
-            return self.chain[-1].get('difficulty', DIFFICULTY)
-
-        if len(self.chain) < self.ADJUST_INTERVAL:
+        if len(self.chain) < 2:
             return DIFFICULTY
-    
-        last_block = self.chain[-1]
-        first_block = self.chain[-self.ADJUST_INTERVAL]
 
+        last_block = self.chain[-1]
+        
+        # --- PROTEÇÃO CONTRA TRAVAMENTO ---
+        # Se o último bloco demorou demais (Stall), derruba a dificuldade para destravar
+        time_since_last = time.time() - last_block['timestamp']
+        if time_since_last > 300: # 5 minutos
+            new_diff = max(1, last_block['difficulty'] - 1)
+            print(f"⚠️ [STALL PROTECT] Rede parada há {int(time_since_last)}s. Aliviando dificuldade para {new_diff}")
+            return new_diff
+
+        # Ajuste normal a cada 50 blocos
+        if target_block_index % self.ADJUST_INTERVAL != 0:
+            return last_block.get('difficulty', DIFFICULTY)
+
+        first_block_idx = max(0, len(self.chain) - self.ADJUST_INTERVAL)
+        first_block = self.chain[first_block_idx]
         actual_time = last_block['timestamp'] - first_block['timestamp']
         expected_time = self.ADJUST_INTERVAL * self.TARGET_TIME
 
-        # Limite estilo Bitcoin (¼x a 4x)
-        actual_time = max(expected_time // 4, min(actual_time, expected_time * 4))
+        # Limite estilo Bitcoin (máximo 4x ou 1/4x de mudança)
+        actual_time = max(expected_time / 4, min(actual_time, expected_time * 4))
 
         old_diff = last_block['difficulty']
         new_diff = int(old_diff * (expected_time / actual_time))
-
-        print(f"[DIFF BITCOIN] antiga={old_diff} nova={new_diff}")
-
         return max(1, new_diff)
 
     def __init__(self, conn, node_id):
@@ -274,7 +276,6 @@ class Blockchain:
         self.current_transactions = []
 
         if not self.chain:
-            print("[BOOT] 📡 Inserindo Gênese Base 500.0...")
             genesis_block = {
                 'index': 1,
                 'previous_hash': '1',
@@ -283,13 +284,13 @@ class Blockchain:
                 'miner': 'genesis',
                 'transactions': [],
                 'difficulty': 1,
-                'protocol_value': 500.0 # <--- ERA 0, AGORA É 500 (IGUAL AO SERVER)
+                'protocol_value': 500.0 
             }
             self.chain.append(genesis_block)
             self._save_block(genesis_block)
             
-        self.difficulty = self._calculate_difficulty_for_index(len(self.chain))
-        print(f"[BOOT] Dificuldade inicial da cadeia: {self.difficulty}")
+        self.difficulty = self._calculate_difficulty_for_index(len(self.chain) + 1)
+
 
     @staticmethod
     def hash(block):
@@ -1339,9 +1340,9 @@ from web3 import Web3
 
 # --- CONFIGURAÇÕES DA PONTE ---
 ETH_RPC_URL = "https://rpc.ankr.com/eth" # Ou Infura/Alchemy
-WKERT_CONTRACT = "0x12f40def427635c896d65bf5934d04654da29190"
-ADMIN_PRIVATE_KEY_ETH = "e7b2b7720bb46798bfa65ccd06502d657acc4e3954a7b0149993952d1cfe0098" # Para enviar WKERT
-ADMIN_KERT_ADDR = "3e128f4c1045cb2cf7ad48215c421824207b7905" # Seu cofre nativo
+WKERT_CONTRACT = ""
+ADMIN_PRIVATE_KEY_ETH = "" # Para enviar WKERT
+ADMIN_KERT_ADDR = "" # Seu cofre nativo
 
 w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL))
         
@@ -1750,7 +1751,7 @@ def broadcast_new_block(block):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 5001))
+    port = int(os.environ.get('PORT', 8001))
 
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
