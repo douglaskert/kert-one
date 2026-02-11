@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Kert-One | Digital Bank</title>
 
+    <!-- Meta Tags para PWA/Mobile -->
+    <meta name="theme-color" content="#FF7A00">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Kert-One">
+
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
     <script src="https://unpkg.com/html5-qrcode"></script>
@@ -14,11 +20,12 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap');
         
         :root {
             --inter-orange: #FF7A00;
             --inter-dark: #1a1a1a;
+            --inter-black: #050505;
         }
 
         body {
@@ -26,6 +33,7 @@
             color: #1e293b;
             font-family: 'Inter', sans-serif;
             -webkit-tap-highlight-color: transparent;
+            overscroll-behavior-y: none; /* Previne refresh ao puxar pra baixo no mobile */
         }
 
         .bg-inter-orange { background-color: var(--inter-orange); }
@@ -50,59 +58,225 @@
 
         .nav-active { color: var(--inter-orange) !important; }
         .nav-active i { transform: scale(1.1); transition: transform 0.2s; }
+        
+        /* Estilos Específicos para a tela de Instalação Dark Mode */
+        .install-container {
+            background-color: var(--inter-black);
+            color: white;
+            min-height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 60; /* Acima do header */
+        }
+        
+        .install-card { 
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s ease; 
+        }
+        .install-card:hover { 
+            border-color: var(--inter-orange);
+            transform: translateY(-2px); 
+            background: rgba(255,255,255,0.05);
+        }
+        
+        .glow-text {
+            text-shadow: 0 0 20px rgba(255, 122, 0, 0.3);
+        }
     </style>
+    
+    <!-- Script para gerar o Manifesto PWA dinamicamente -->
+    <script>
+        const pwaManifest = {
+            "name": "Kert-One App",
+            "short_name": "Kert-One",
+            "start_url": ".",
+            "display": "standalone",
+            "orientation": "portrait",
+            "background_color": "#050505",
+            "theme_color": "#FF7A00",
+            "icons": [
+                {
+                    "src": "https://ui-avatars.com/api/?name=K&background=FF7A00&color=fff&rounded=true&size=192",
+                    "sizes": "192x192",
+                    "type": "image/png"
+                },
+                {
+                    "src": "https://ui-avatars.com/api/?name=K&background=FF7A00&color=fff&rounded=true&size=512",
+                    "sizes": "512x512",
+                    "type": "image/png"
+                }
+            ]
+        };
+        const stringManifest = JSON.stringify(pwaManifest);
+        const blob = new Blob([stringManifest], {type: 'application/json'});
+        const manifestURL = URL.createObjectURL(blob);
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = manifestURL;
+        document.head.appendChild(link);
+    </script>
 </head>
 <body class="flex justify-center min-h-screen">
 
-    <div class="w-full max-w-md bg-white min-h-screen shadow-2xl flex flex-col relative overflow-x-hidden">
+    <div id="appContainer" class="w-full max-w-md bg-white min-h-screen shadow-2xl flex flex-col relative overflow-x-hidden">
         
-        <header id="appHeader" class="hidden p-5 flex items-center justify-between sticky top-0 z-50 glass border-b border-gray-100">
-            <div class="flex items-center gap-3">
-                <div class="relative cursor-pointer" onclick="show('profile')">
-                    <img id="userPhoto" src="https://ui-avatars.com/api/?name=User&background=FF7A00&color=fff" class="w-10 h-10 rounded-full border-2 border-orange-100 object-cover">
-                    <div class="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
-                </div>
-                <div>
-                    <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Bem-vindo</p>
-                    <h2 id="displayUsername" class="text-sm font-bold text-gray-800">Usuário Kert</h2>
-                </div>
+        <!-- HEADER CONSOLIDADO (Aparece apenas quando logado) -->
+        <header id="appHeader" class="hidden flex flex-col sticky top-0 z-50 glass border-b border-gray-100">
+            <!-- Linha do Valor Protocolar -->
+            <div id="protocolRow" class="flex justify-between items-center px-5 py-1.5 bg-gray-50/50 opacity-0 transition-opacity duration-500 border-b border-gray-100">
+                <span class="text-[8px] font-black text-orange-500 uppercase tracking-tighter">
+                    <i class="fa-solid fa-microchip mr-1"></i>Kert-One Preço
+                </span>
+                <span id="protocolValue" class="text-[9px] font-mono font-bold text-gray-400">carregando...</span>
             </div>
-            <div class="flex gap-4">
-                <button onclick="updateBalance()" class="text-gray-400 hover:text-orange-500 transition active:rotate-180 duration-500">
-                    <i class="fa-solid fa-rotate text-lg"></i>
-                </button>
-                <button onclick="logout()" class="text-gray-400 hover:text-red-500 transition">
-                    <i class="fa-solid fa-power-off text-lg"></i>
-                </button>
+
+            <!-- Navegação de Perfil e Ações -->
+            <div class="p-5 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="relative cursor-pointer" onclick="show('profile')">
+                        <img id="userPhoto" src="https://ui-avatars.com/api/?name=User&background=FF7A00&color=fff" class="w-10 h-10 rounded-full border-2 border-orange-100 object-cover">
+                        <div class="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
+                    </div>
+                    <div>
+                        <p class="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Bem-vindo</p>
+                        <h2 id="displayUsername" class="text-sm font-bold text-gray-800">Usuário Kert</h2>
+                    </div>
+                </div>
+                <div class="flex gap-4">
+                    <button onclick="updateBalance()" class="text-gray-400 hover:text-orange-500 transition active:rotate-180 duration-500">
+                        <i class="fa-solid fa-rotate text-lg"></i>
+                    </button>
+                    <button onclick="logout()" class="text-gray-400 hover:text-red-500 transition">
+                        <i class="fa-solid fa-power-off text-lg"></i>
+                    </button>
+                </div>
             </div>
         </header>
 
-        <main class="flex-1 px-5 py-4 overflow-y-auto pb-28">
+        <main class="flex-1 overflow-y-auto pb-28">
 
-            <div id="auth" class="tab active pt-12 text-center">
-                <div class="w-24 h-24 bg-inter-orange rounded-[2.5rem] mx-auto flex items-center justify-center text-white text-5xl font-black mb-6 shadow-2xl shadow-orange-200 rotate-3">K</div>
+            <!-- AUTH TAB (Tela Inicial) -->
+            <div id="auth" class="tab active pt-8 px-5 text-center">
+                <div class="w-24 h-24 bg-inter-orange rounded-[2.5rem] mx-auto flex items-center justify-center shadow-2xl shadow-orange-200 rotate-3">
+    <img src="https://raw.githubusercontent.com/douglaskert/kert-one/main/kertone.png"
+         class="w-16 h-16 object-contain"
+         alt="Kert-One Logo">
+</div>
+
                 <h2 class="text-3xl font-extrabold text-gray-900 mb-2">Kert-One</h2>
-                <p class="text-gray-500 mb-12">O banco digital da nova geração.</p>
+                <p class="text-gray-500 mb-10">O banco digital da nova geração.</p>
                 
-                <div class="space-y-4">
-                    <button id="createBtn" onclick="generateWallet()" class="w-full bg-inter-orange text-white py-4 rounded-2xl font-bold shadow-lg shadow-orange-100 active:scale-[0.98] transition-all">Criar Conta Grátis</button>
-                    <button onclick="show('import')" class="w-full bg-gray-50 text-gray-600 py-4 rounded-2xl font-bold border border-gray-200 hover:bg-gray-100 transition">Acessar com Chave</button>
+                <div class="space-y-3">
+                    <button id="createBtn" onclick="generateWallet()" class="w-full bg-inter-orange text-white py-4 rounded-2xl font-bold shadow-lg shadow-orange-100 active:scale-[0.98] transition-all">
+                        Criar Conta Grátis
+                    </button>
+                    
+                    <button onclick="show('import')" class="w-full bg-gray-50 text-gray-600 py-4 rounded-2xl font-bold border border-gray-200 hover:bg-gray-100 transition">
+                        Acessar com Chave
+                    </button>
+
+                    <!-- BOTÃO NOVO: INSTALAR APP -->
+                    <!-- Agora este botão tenta disparar a instalação nativa do Android -->
+                    <button onclick="triggerInstall()" id="installPwaBtn" class="w-full bg-gray-900 text-white py-3 rounded-2xl font-bold border border-gray-800 hover:bg-black transition flex items-center justify-center gap-2 shadow-lg">
+                        <i class="fa-solid fa-mobile-screen-button text-orange-500"></i> Instalar App / APK
+                    </button>
                 </div>
                 
-                <p class="mt-16 text-[11px] text-gray-400 leading-relaxed">
+                <p class="mt-12 text-[11px] text-gray-400 leading-relaxed">
                     Sistema recomendado para empresas:<br>
                     <a href="https://genesisaas.com.br/" target="_blank" class="text-orange-500 font-bold hover:underline">Genesis SaaS - Soluções Completas</a>
                 </p>
             </div>
 
-            <div id="import" class="tab">
+            <!-- INSTALL APP TAB (NOVA ABA DARK MODE) -->
+            <div id="install" class="tab install-container p-6">
+                <!-- Header Install -->
+                <div class="flex justify-between items-center mb-8">
+                    <div class="flex items-center gap-2">
+                        <div class="w-8 h-8 bg-inter-orange rounded-lg flex items-center justify-center text-white font-bold text-lg">K</div>
+                        <span class="font-bold tracking-wider text-sm">KERT.ONE</span>
+                    </div>
+                    <button onclick="show('auth')" class="text-gray-400 hover:text-white transition text-sm font-bold border border-gray-700 px-3 py-1 rounded-full">
+                        VOLTAR
+                    </button>
+                </div>
+
+                <!-- Hero Section -->
+                <div class="mb-10">
+                    <span class="px-3 py-1 rounded-full border border-orange-500/30 bg-orange-500/10 text-[10px] text-orange-500 font-bold uppercase tracking-widest mb-4 inline-block">App Mobile V1.0</span>
+                    <h1 class="text-4xl font-black leading-tight mb-2">Instale o <br><span class="text-inter-orange glow-text">Super App.</span></h1>
+                    <p class="text-gray-400 text-sm leading-relaxed max-w-[80%]">Para transformar este site em um aplicativo nativo no seu dispositivo, siga as instruções abaixo ou clique no botão acima se disponível.</p>
+                </div>
+
+                <!-- Cards de Instalação -->
+                <div class="space-y-4 pb-10">
+                    
+                    <!-- Android -->
+                    <div id="card-android" class="install-card p-5 rounded-2xl relative overflow-hidden group">
+                        <div class="absolute top-0 right-0 p-4 opacity-20 group-hover:opacity-40 transition"><i class="fa-brands fa-android text-4xl"></i></div>
+                        <h3 class="font-bold text-lg mb-1">Android</h3>
+                        <p class="text-xs text-gray-500 mb-4">Instalação via Chrome (PWA)</p>
+                        
+                        <div class="flex gap-3 text-xs text-gray-300 mb-4">
+                            <div class="flex-1 bg-white/5 p-2 rounded-lg border border-white/5">
+                                <span class="block text-[10px] text-gray-500 mb-1">Passo 1</span>
+                                Toque nos 3 pontos <b>(⋮)</b>
+                            </div>
+                            <div class="flex-1 bg-white/5 p-2 rounded-lg border border-white/5">
+                                <span class="block text-[10px] text-gray-500 mb-1">Passo 2</span>
+                                <b>"Instalar aplicativo"</b>
+                            </div>
+                        </div>
+
+                        <!-- Botão de Ação Direta -->
+                        <button onclick="triggerInstall()" class="w-full bg-inter-orange text-white py-3 rounded-xl text-xs font-bold hover:bg-orange-600 transition shadow-lg shadow-orange-900/20">
+                            <i class="fa-solid fa-download mr-2"></i> Tentar Instalar Agora
+                        </button>
+                    </div>
+
+                    <!-- iOS -->
+                    <div id="card-ios" class="install-card p-5 rounded-2xl relative overflow-hidden group">
+                        <div class="absolute top-0 right-0 p-4 opacity-20 group-hover:opacity-40 transition"><i class="fa-brands fa-apple text-4xl"></i></div>
+                        <h3 class="font-bold text-lg mb-1">iPhone (iOS)</h3>
+                        <p class="text-xs text-gray-500 mb-4">Instalação via Safari</p>
+                        
+                        <ol class="text-xs text-gray-400 space-y-2 pl-2">
+                            <li class="flex items-center gap-2"><i class="fa-solid fa-arrow-up-from-bracket text-blue-500"></i> Toque em <b>Compartilhar</b></li>
+                            <li class="flex items-center gap-2"><i class="fa-regular fa-square-plus text-gray-300"></i> Escolha <b>"Adicionar à Tela de Início"</b></li>
+                            <li class="flex items-center gap-2"><i class="fa-solid fa-check text-green-500"></i> Confirme em <b>"Adicionar"</b></li>
+                        </ol>
+                    </div>
+
+                    <!-- Windows / PC -->
+                    <div id="card-windows" class="install-card p-5 rounded-2xl relative overflow-hidden group">
+                        <div class="absolute top-0 right-0 p-4 opacity-20 group-hover:opacity-40 transition"><i class="fa-brands fa-windows text-4xl"></i></div>
+                        <h3 class="font-bold text-lg mb-1">Windows / PC</h3>
+                        <p class="text-xs text-gray-500 mb-4">Instalação via Chrome/Edge</p>
+                        
+                        <div class="bg-white/5 p-3 rounded-xl border border-white/5 text-xs text-gray-400 flex items-center gap-3">
+                            <i class="fa-solid fa-arrow-up-right-from-square text-lg"></i>
+                            <div>
+                                Procure o ícone de download <i class="fa-solid fa-download mx-1"></i> na barra de endereço do navegador.
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- IMPORT TAB -->
+            <div id="import" class="tab px-5">
                 <button onclick="show('auth')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2 hover:text-gray-600 transition"><i class="fa-solid fa-arrow-left"></i> VOLTAR</button>
                 <h2 class="text-2xl font-bold mb-4">Acessar Conta</h2>
                 <textarea id="pk" class="w-full p-4 rounded-2xl bg-gray-50 border border-gray-200 mb-6 h-32 outline-none focus:ring-2 focus:ring-orange-500 transition-all font-mono text-sm" placeholder="Sua Private Key Hexadecimal"></textarea>
                 <button onclick="importWallet()" class="w-full bg-inter-dark text-white py-4 rounded-2xl font-bold hover:bg-black transition-colors">Entrar na Conta</button>
             </div>
 
-            <div id="main" class="tab">
+            <!-- MAIN TAB (Dashboard) -->
+            <div id="main" class="tab px-5">
                 <div class="bg-inter-dark rounded-[2.5rem] p-8 text-white mb-8 shadow-2xl relative overflow-hidden group">
                     <p class="text-gray-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-3">Saldo Disponível</p>
                     <div class="flex items-baseline gap-2">
@@ -142,7 +316,8 @@
                 <div id="recentList" class="space-y-4"></div>
             </div>
 
-            <div id="send" class="tab">
+            <!-- SEND TAB -->
+            <div id="send" class="tab px-5">
                 <button onclick="show('main')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-xmark"></i> CANCELAR</button>
                 <h2 class="text-2xl font-bold mb-8">Enviar Pagamento</h2>
                 
@@ -162,7 +337,8 @@
                 </div>
             </div>
 
-            <div id="receive" class="tab text-center">
+            <!-- RECEIVE TAB -->
+            <div id="receive" class="tab px-5 text-center">
                 <button onclick="show('main')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-arrow-left"></i> VOLTAR</button>
                 <h2 class="text-2xl font-bold mb-12">Receber Pagamento</h2>
                 <div id="qr" class="flex justify-center mb-12"></div>
@@ -171,23 +347,25 @@
                 </div>
             </div>
 
-            <div id="history" class="tab">
+            <!-- HISTORY TAB -->
+            <div id="history" class="tab px-5">
                 <button onclick="show('main')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-arrow-left"></i> VOLTAR</button>
                 <h2 class="text-2xl font-bold mb-6">Extrato</h2>
                 <div id="fullHistoryList" class="space-y-4"></div>
             </div>
 
-            <div id="profile" class="tab">
+            <!-- PROFILE TAB -->
+            <div id="profile" class="tab px-5">
                 <button onclick="show('main')" class="mb-6 text-gray-400 font-bold text-sm flex items-center gap-2"><i class="fa-solid fa-arrow-left"></i> VOLTAR</button>
                 <h2 class="text-2xl font-bold mb-8">Meu Perfil</h2>
                 <input id="usernameInput" class="w-full p-4 bg-gray-50 rounded-2xl border border-gray-100 mb-4 font-semibold" placeholder="Nome de Usuário">
-                <!-- FOTO: adicionado: -->
                 <input type="file" id="photoInput" accept="image/*" class="w-full p-3 bg-gray-50 rounded-2xl border border-gray-200 mb-4">
                 <button onclick="saveProfile()" class="w-full bg-inter-orange text-white py-4 rounded-2xl font-bold mb-10">Salvar Alterações</button>
                 <button onclick="exportKey()" class="w-full text-sm text-gray-600 font-bold py-4 border border-dashed border-gray-300 rounded-2xl"><i class="fa-solid fa-key mr-2 text-orange-500"></i> Backup da Chave Privada</button>
             </div>
 
-            <div id="receipt" class="tab">
+            <!-- RECEIPT TAB -->
+            <div id="receipt" class="tab px-5">
                 <div class="bg-white p-10 rounded-[3rem] border-2 border-dashed border-gray-200 text-center">
                     <div class="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center text-green-600 text-4xl mx-auto mb-6"><i class="fa-solid fa-circle-check"></i></div>
                     <h2 class="text-2xl font-bold mb-1">Sucesso!</h2>
@@ -217,36 +395,93 @@
     <div id="toast" class="fixed bottom-28 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-8 py-4 rounded-3xl text-xs font-bold opacity-0 transition-all duration-300 z-[999]">Notificação</div>
 
 <script>
-/*
-  Script completo: corrige assinaturas, adiciona perfil/foto, histórico persistente,
-  QR com nome, scanner que salva mapa (addressBook), detecção de recebimentos consultando /chain,
-  e mantém seu layout e todos os elementos originais.
-*/
-
 const API = window.location.origin;
 const EC = new elliptic.ec('secp256k1');
 
 let wallet = {};
 let history = [];
 let profile = { name: "Usuário Kert", photo: "" };
-let addressBook = {}; // mapa address -> name (preenchido quando o usuário lê um QR com nome)
+let addressBook = {}; 
 let html5QrCode = null;
-let lastSeenBlockIndex = 0; // usado para detectar novos blocos/txs
-let lastScannedName = "";   // nome lido via QR (para preencher histórico do envio)
+let lastSeenBlockIndex = 0; 
+let lastScannedName = "";
+let deferredPrompt; // Variável para armazenar o evento de instalação
 
-// helpers DOM
 const $ = id => document.getElementById(id);
 
-// ---------------- INIT ----------------
+// ---------------- LÓGICA DE INSTALAÇÃO (PWA) ----------------
+// Escuta o evento que o navegador dispara quando o app pode ser instalado
+window.addEventListener('beforeinstallprompt', (e) => {
+    // Previne a barra automática do Chrome de aparecer imediatamente (opcional)
+    e.preventDefault();
+    // Guarda o evento para usar no botão
+    deferredPrompt = e;
+    console.log("PWA pronto para instalar");
+    
+    // Mostra feedback visual ou atualiza texto do botão
+    const btn = document.getElementById('installPwaBtn');
+    if(btn) {
+        btn.innerHTML = '<i class="fa-solid fa-download text-orange-500"></i> Instalar App Agora';
+        btn.onclick = triggerInstall; // Garante que o clique chame a função
+    }
+});
+
+async function triggerInstall() {
+    if (deferredPrompt) {
+        // Mostra o prompt nativo
+        deferredPrompt.prompt();
+        // Espera a escolha do usuário
+        const { outcome } = await deferredPrompt.userChoice;
+        console.log(`User response to the install prompt: ${outcome}`);
+        deferredPrompt = null;
+    } else {
+        // Se o navegador não suporta o prompt automático (ex: iOS), mostra a tela de instruções
+        show('install');
+    }
+}
+
+// ---------------- DETECÇÃO DE OS ----------------
+function detectOS() {
+    const userAgent = window.navigator.userAgent;
+    let os = "windows"; // default
+    if (/android/i.test(userAgent)) os = "android";
+    else if (/iPad|iPhone|iPod/.test(userAgent) && !window.MSStream) os = "ios";
+    
+    // Destaca o card correto na tela de instalação
+    const cards = document.querySelectorAll('.install-card');
+    // Remove destaques anteriores
+    cards.forEach(c => {
+        c.classList.remove('border-orange-500', 'bg-white/10');
+        c.classList.add('opacity-70');
+    });
+    
+    const target = $(`card-${os}`);
+    if(target) {
+        target.classList.remove('opacity-70');
+        target.classList.add('border-orange-500', 'bg-white/10'); // Destaque Laranja
+        // Rola até o card se necessário
+        setTimeout(() => target.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
+    }
+}
+
+// ---------------- INIT UNIFICADO ----------------
 window.onload = async () => {
     loadData();
-    // Exibir perfil salvo
+    detectOS(); // Roda a detecção de sistema
+    
+    // Atualiza Perfil na UI
     $('displayUsername').innerText = profile.name;
+    if($('usernameInput')) $('usernameInput').value = profile.name;
     if(profile.photo) $('userPhoto').src = profile.photo;
+    
     if(wallet.address) {
         loginSuccess(false);
         await initLastSeenBlock();
         startAutoReceiveWatcher();
+        
+        // Inicializa Valor Protocolar
+        updateProtocolValue();
+        setInterval(updateProtocolValue, 30000); 
     }
 };
 
@@ -260,12 +495,7 @@ function loadData() {
         lastSeenBlockIndex = parseInt(localStorage.getItem('kert_last_block') || "0");
     } catch(e) {
         console.error("Erro ao carregar dados locais:", e);
-        wallet = {}; history = []; profile = { name: "Usuário Kert", photo: ""}; addressBook = {}; lastSeenBlockIndex = 0;
     }
-    // fill UI fields
-    $('displayUsername').innerText = profile.name;
-    if($('usernameInput')) $('usernameInput').value = profile.name;
-    if(profile.photo) $('userPhoto').src = profile.photo;
     if(wallet.address) $('addr').innerText = wallet.address;
 }
 
@@ -284,12 +514,14 @@ function show(id) {
     if(el) el.classList.add('active');
 
     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('nav-active'));
-    if(document.getElementById(`nav-${id}`)) document.getElementById(`nav-${id}`).classList.add('nav-active');
+    if($(`nav-${id}`)) $(`nav-${id}`).classList.add('nav-active');
 
     if(id === 'main') renderRecent();
     if(id === 'history') renderFullHistory();
-    // stop scanner when leaving send
     if(id !== 'send' && html5QrCode) stopScanner();
+    
+    // Roda detecção de OS se entrar na tela de instalação
+    if(id === 'install') detectOS();
 }
 
 function notify(msg) {
@@ -304,14 +536,35 @@ function copyText(text, feedback = 'Copiado!') {
     navigator.clipboard?.writeText(text).then(() => notify(feedback)).catch(()=> notify("Erro ao copiar"));
 }
 
-// ---------------- ADDRESS DERIVATION (igual Python) ----------------
-function pubToAddress(pubHex){
-    // IGUAL AO PYTHON
-    if(pubHex.startsWith("04") && pubHex.length === 130){
-        pubHex = pubHex.slice(2);
+function logout() {
+    if(confirm("Deseja realmente sair? Certifique-se de ter backup da sua chave.")) {
+        localStorage.clear();
+        location.reload();
     }
+}
+
+// ---------------- CRYPTO & PROTOCOL ----------------
+function pubToAddress(pubHex){
+    if(pubHex.startsWith("04") && pubHex.length === 130) pubHex = pubHex.slice(2);
     const words = CryptoJS.enc.Hex.parse(pubHex);
     return CryptoJS.SHA256(words).toString().substring(0,40);
+}
+
+async function updateProtocolValue() {
+    try {
+        const response = await axios.get(`${API}/coin/value`);
+        const data = response.data;
+
+        const formattedValue = Number(data.protocol_value).toFixed(2);
+
+        const display = $('protocolValue');
+        if (display) {
+            display.innerText = `${formattedValue} ${data.coin}`;
+            $('protocolRow').classList.remove('opacity-0');
+        }
+    } catch (e) {
+        console.warn("Erro ao buscar valor protocolar:", e);
+    }
 }
 
 
@@ -328,7 +581,7 @@ function generateWallet() {
 }
 
 function importWallet() {
-    const pkVal = ($('pk') && $('pk').value) ? $('pk').value.trim() : "";
+    const pkVal = $('pk').value.trim();
     if(!pkVal) return notify("Cole sua private key");
     try {
         const key = EC.keyFromPrivate(pkVal, 'hex');
@@ -344,7 +597,6 @@ function importWallet() {
     }
 }
 
-// ---------------- LOGIN / BALANCE ----------------
 function loginSuccess(welcome = true) {
     $('appHeader').classList.remove('hidden');
     $('navbar').classList.remove('hidden');
@@ -360,56 +612,27 @@ async function updateBalance() {
         const r = await axios.get(`${API}/balance/${wallet.address}`);
         $('balance').innerText = parseFloat(r.data.balance).toFixed(2);
     } catch (e) {
-        console.warn("Erro ao atualizar saldo", e);
-        notify("Erro ao atualizar saldo");
+        console.warn("Erro ao atualizar saldo");
     }
 }
 
-// ---------------- SIGN TRANSACTION (compatível com Python) ----------------
-// IMPORTANT: Python verifies signature over JSON with keys sorted and separators(",", ":")
-// We replicate that by JSON.stringify with sorted keys (default stringify has no extra spaces).
-function compactJsonSorted(obj) {
-    const keys = Object.keys(obj).sort();
-    const ordered = {};
-    for(const k of keys) ordered[k] = obj[k];
-    // JSON.stringify without spaces -> matches Python's separators(',',':')
-    return JSON.stringify(ordered, keys);
-}
-
+// ---------------- SIGNATURE ----------------
 function signTx(recipient, amount) {
-
     const amount_str = Number(amount).toFixed(8);
     const fee_str = (0.01).toFixed(8);
-
-    // 🔒 ORDEM EXATA DO PYTHON
     const messageObj = {
         amount: amount_str,
         fee: fee_str,
         recipient: recipient,
         sender: wallet.address
     };
-
-    // 🔒 JSON BINÁRIO IDÊNTICO AO json.dumps(sort_keys=True,separators=(",",":"))
     const messageJson = JSON.stringify(messageObj, Object.keys(messageObj).sort());
-
-    // 🔒 HASH IGUAL AO PYTHON
     const hashHex = CryptoJS.SHA256(messageJson).toString();
-
     const key = EC.keyFromPrivate(wallet.private, 'hex');
-
-    // 🔥 CRÍTICO: ASSINAR O DIGEST, NÃO A STRING
     const sig = key.sign(hashHex, { canonical: true });
-
-    // 🔥 ASSINATURA CRUA r||s (igual sign_digest do Python)
-    const r = sig.r.toString('hex').padStart(64, '0');
-    const s = sig.s.toString('hex').padStart(64, '0');
-    const signature = r + s;
-
-    // 🔥 CHAVE PÚBLICA NO FORMATO QUE O NODE ESPERA (64 bytes, SEM 04)
+    const signature = sig.r.toString('hex').padStart(64, '0') + sig.s.toString('hex').padStart(64, '0');
     let publicKeyHex = key.getPublic('hex');
-    if (publicKeyHex.startsWith("04")) {
-        publicKeyHex = publicKeyHex.slice(2);
-    }
+    if (publicKeyHex.startsWith("04")) publicKeyHex = publicKeyHex.slice(2);
 
     return {
         id: crypto.randomUUID(),
@@ -423,66 +646,63 @@ function signTx(recipient, amount) {
     };
 }
 
-
-// ---------------- PROCESS PAYMENT ----------------
+// ---------------- ACTIONS ----------------
 async function processPayment() {
-    const toEl = $('to');
-    const amountEl = $('amount');
-    if(!toEl || !amountEl) return;
-    const toAddr = toEl.value.trim();
-    const amt = parseFloat(amountEl.value);
-    if(!toAddr || isNaN(amt) || amt <= 0) return notify("Valor inválido");
+    const toAddr = $('to').value.trim();
+    const amt = parseFloat($('amount').value);
+    if(!toAddr || isNaN(amt) || amt <= 0) return notify("Dados inválidos");
 
-    // prepare tx
     const tx = signTx(toAddr, amt);
-
     try {
-        // send to backend
-        const res = await axios.post(`${API}/tx/new`, tx, { headers: { 'Content-Type': 'application/json' } });
-
-        // record history (outgoing): use lastScannedName if available, else lookup addressBook
+        await axios.post(`${API}/tx/new`, tx);
         let recipientName = lastScannedName || addressBook[toAddr] || toAddr;
         const now = new Date().toLocaleString();
         history.unshift({
-            id: tx.id,
-            type: 'envio',
-            amount: parseFloat(tx.amount),
-            to: toAddr,
-            name: recipientName,
-            date: now
+            id: tx.id, type: 'envio', amount: amt, to: toAddr, name: recipientName, date: now
         });
-
-        // If we scanned a name for this address, save in addressBook for future
-        if(lastScannedName) {
-            addressBook[toAddr] = lastScannedName;
-            lastScannedName = "";
-            saveData();
-        } else {
-            saveData();
-        }
-
-        // show receipt
-        $('receiptAmount').innerText = `K$ ${parseFloat(tx.amount).toFixed(2)}`;
+        if(lastScannedName) addressBook[toAddr] = lastScannedName;
+        lastScannedName = "";
+        saveData();
+        
+        $('receiptAmount').innerText = `K$ ${amt.toFixed(6)}`;
         $('receiptTo').innerText = recipientName;
         $('receiptId').innerText = tx.id;
         $('receiptDate').innerText = now;
-
-        renderRecent();
         show('receipt');
         updateBalance();
     } catch (err) {
-        console.error("Erro ao enviar TX:", err);
         notify(err?.response?.data?.message || "Erro na transação");
     }
 }
 
-// ---------------- RECEIVE (QR with name) ----------------
+function saveProfile() {
+    profile.name = $('usernameInput').value || "Usuário Kert";
+    const file = $('photoInput').files[0];
+    if(file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            profile.photo = e.target.result;
+            $('userPhoto').src = profile.photo;
+            saveData();
+            notify("Perfil Atualizado!");
+        };
+        reader.readAsDataURL(file);
+    } else {
+        saveData();
+        $('displayUsername').innerText = profile.name;
+        notify("Nome Atualizado!");
+    }
+}
+
+function exportKey() {
+    copyText(wallet.private, "Chave Privada Copiada!");
+}
+
+// ---------------- SCANNER & QR ----------------
 function showReceive() {
     show('receive');
-    if(!wallet.address) return notify("Crie ou importe uma conta primeiro");
     const payload = JSON.stringify({ address: wallet.address, name: profile.name });
     $('recvAddr').innerText = wallet.address;
-
     const qrContainer = $('qr');
     qrContainer.innerHTML = "";
     const qr = qrcode(0, 'M');
@@ -491,61 +711,43 @@ function showReceive() {
     qrContainer.innerHTML = qr.createImgTag(5);
 }
 
-// ---------------- SCANNER ----------------
 function startScanner() {
     if(html5QrCode) stopScanner();
     html5QrCode = new Html5Qrcode("reader");
     html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, (text) => {
         try {
-            // try to parse JSON payload {address, name}
             const data = JSON.parse(text);
             if(data.address) {
                 $('to').value = data.address;
                 if(data.name) {
                     lastScannedName = data.name;
-                    // save mapping to addressBook for convenience
                     addressBook[data.address] = data.name;
                     saveData();
-                    notify(`Nome detectado: ${data.name}`);
-                } else {
-                    notify("Endereço lido");
                 }
-            } else {
-                $('to').value = text;
-                notify("Endereço lido");
-            }
-        } catch (e) {
-            // fallback: raw string
-            $('to').value = text;
-            notify("QR lido");
-        }
+            } else { $('to').value = text; }
+        } catch (e) { $('to').value = text; }
         stopScanner();
-    }).catch(err => {
-        console.error("Erro ao iniciar scanner:", err);
-        notify("Falha ao acessar câmera");
+        notify("QR Detectado");
     });
 }
 
 function stopScanner() {
-    if(html5QrCode) {
-        html5QrCode.stop().then(() => {
-            html5QrCode.clear();
-            html5QrCode = null;
-        }).catch(()=> { html5QrCode = null; });
-    }
+    if(html5QrCode) html5QrCode.stop().then(() => html5QrCode = null);
 }
 
-// ---------------- HISTORY RENDER ----------------
+// ---------------- HISTÓRICO ----------------
 function renderRecent() {
     const list = $('recentList');
     if(!list) return;
     list.innerHTML = history.slice(0, 3).map(tx => `
         <div class="flex justify-between p-4 bg-gray-50 rounded-2xl">
             <div>
-                <p class="text-xs font-bold">${tx.name || (tx.to || tx.from) || 'Você'}</p>
+                <p class="text-xs font-bold">${tx.name || 'Você'}</p>
                 <p class="text-[10px] text-gray-400">${tx.date}</p>
             </div>
-            <span class="font-bold">${tx.type === 'envio' ? '-' : '+'} K$ ${parseFloat(tx.amount).toFixed(2)}</span>
+            <span class="font-bold ${tx.type === 'envio' ? 'text-red-500' : 'text-green-500'}">
+                ${tx.type === 'envio' ? '-' : '+'} K$ ${parseFloat(tx.amount).toFixed(6)}
+            </span>
         </div>
     `).join('') || "<p class='text-center text-gray-400 py-4'>Nenhuma atividade</p>";
 }
@@ -556,157 +758,56 @@ function renderFullHistory() {
     list.innerHTML = history.map(tx => `
         <div class="p-4 border border-gray-100 rounded-2xl mb-2">
             <div class="flex justify-between mb-1">
-                <span class="text-xs font-bold">${tx.name || (tx.to || tx.from) || 'Você'}</span>
-                <span class="font-bold">K$ ${parseFloat(tx.amount).toFixed(2)}</span>
+                <span class="text-xs font-bold">${tx.name || 'Desconhecido'}</span>
+                <span class="font-bold">K$ ${parseFloat(tx.amount).toFixed(6)}</span>
             </div>
             <div class="flex justify-between text-[10px] text-gray-400">
                 <span>${tx.date}</span>
-                <span>${tx.id}</span>
+                <span class="font-mono">${tx.id.substring(0,8)}...</span>
             </div>
         </div>
     `).join('') || "<p class='text-center text-gray-400 py-4'>Sem transações</p>";
 }
 
-// ---------------- CHAIN SCAN TO DETECT INCOMING TXs ----------------
+// ---------------- WATCHER ----------------
 async function initLastSeenBlock() {
     try {
         const r = await axios.get(`${API}/chain`);
         const chain = r.data.chain || [];
-        if(chain.length) {
-            lastSeenBlockIndex = chain[chain.length - 1].index || chain.length;
-            localStorage.setItem('kert_last_block', String(lastSeenBlockIndex));
-        }
-    } catch (e) {
-        console.warn("Não foi possível inicializar lastSeenBlockIndex", e);
-    }
+        if(chain.length) lastSeenBlockIndex = chain[chain.length - 1].index;
+    } catch (e) {}
 }
 
 async function startAutoReceiveWatcher() {
-    if(!wallet.address) return;
-    // ensure lastSeenBlockIndex initialized
-    await initLastSeenBlock();
-
     setInterval(async () => {
         if(!wallet.address) return;
         try {
-            // 1) update balance quickly
             await updateBalance();
-
-            // 2) fetch chain and look for new blocks > lastSeenBlockIndex
             const r = await axios.get(`${API}/chain`);
             const chain = r.data.chain || [];
-            if(chain.length === 0) return;
-
-            // find blocks with index > lastSeenBlockIndex
-            const newBlocks = chain.filter(b => b.index > lastSeenBlockIndex).sort((a,b)=>a.index-b.index);
-            if(newBlocks.length === 0) return;
-
+            const newBlocks = chain.filter(b => b.index > lastSeenBlockIndex);
+            
             for(const blk of newBlocks) {
+                lastSeenBlockIndex = blk.index;
+                saveData();
                 for(const tx of blk.transactions || []) {
-                    try {
-                        // only non-coinbase txs
-                        if(tx.sender === '0') continue;
-                        if(tx.recipient !== wallet.address) continue;
-
-                        // avoid duplicates by checking history ids
-                        const known = history.find(h => h.id === tx.id);
-                        if(known) continue;
-
-                        // Determine sender name if we have it in addressBook
-                        const senderName = addressBook[tx.sender] || tx.sender;
-
-                        // push to history (recebido)
-                        history.unshift({
-                            id: tx.id || ("RX"+Date.now()),
-                            type: 'recebido',
-                            amount: parseFloat(parseFloat(tx.amount).toFixed(8)),
-                            from: tx.sender,
-                            name: senderName,
-                            date: tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : new Date().toLocaleString()
-                        });
-
-                        // notify
-                        notify(`Recebido K$ ${parseFloat(tx.amount).toFixed(2)} de ${senderName}`);
-                        saveData();
-                        renderRecent();
-                    } catch (e) {
-                        console.warn("Erro ao processar tx no bloco:", e);
+                    if(tx.sender !== '0' && tx.recipient === wallet.address) {
+                        if(!history.find(h => h.id === tx.id)) {
+                            history.unshift({
+                                id: tx.id, type: 'recebido', amount: parseFloat(tx.amount),
+                                from: tx.sender, name: addressBook[tx.sender] || tx.sender,
+                                date: new Date().toLocaleString()
+                            });
+                            notify(`Recebido K$ ${parseFloat(tx.amount).toFixed(6)}`);
+                            saveData();
+                            renderRecent();
+                        }
                     }
                 }
-                lastSeenBlockIndex = Math.max(lastSeenBlockIndex, blk.index);
             }
-            localStorage.setItem('kert_last_block', String(lastSeenBlockIndex));
-        } catch (e) {
-            console.warn("Erro no watcher de recebimento:", e);
-        }
-    }, 5000);
+        } catch (e) {}
+    }, 10000);
 }
-
-// ---------------- PROFILE ----------------
-function saveProfile() {
-    const nameVal = ($('usernameInput') && $('usernameInput').value.trim()) || profile.name;
-    profile.name = nameVal;
-    const file = $('photoInput')?.files?.[0];
-    if(file) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            profile.photo = e.target.result;
-            applyProfile();
-        };
-        reader.readAsDataURL(file);
-    } else {
-        applyProfile();
-    }
-}
-
-function applyProfile() {
-    $('displayUsername').innerText = profile.name;
-    if(profile.photo) $('userPhoto').src = profile.photo;
-    saveData();
-    notify("Perfil salvo!");
-    show('main');
-}
-
-// ---------------- EXPORT KEY ----------------
-function exportKey() {
-    if(!wallet.address) return notify("Sem carteira");
-    const blob = new Blob([`Endereço: ${wallet.address}\nChave Privada: ${wallet.private}`], { type: "text/plain" });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = "backup_kert.txt";
-    a.click();
-}
-
-// ---------------- SHARE RECEIPT ----------------
-function shareReceipt() {
-    const text = `${$('receiptAmount').innerText}\nPara: ${$('receiptTo').innerText}\nProtocolo: ${$('receiptId').innerText}\nData: ${$('receiptDate').innerText}`;
-    if(navigator.share) {
-        navigator.share({ text }).catch(()=> copyText(text, "Comprovante copiado"));
-    } else {
-        copyText(text, "Comprovante copiado");
-    }
-}
-
-// ---------------- LOGOUT ----------------
-function logout() {
-    if(confirm("Sair e apagar dados locais?")) {
-        localStorage.removeItem('kert_wallet');
-        localStorage.removeItem('kert_history');
-        localStorage.removeItem('kert_profile');
-        localStorage.removeItem('kert_address_book');
-        localStorage.removeItem('kert_last_block');
-        location.reload();
-    }
-}
-
-// expose some funcs for debugging (optional)
-window._kert = { wallet, profile, history, addressBook };
-
-// initial render of history if any
-renderRecent();
-renderFullHistory();
-
 </script>
-
 </body>
 </html>
