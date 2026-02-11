@@ -127,9 +127,41 @@ mining_active = False
 miner_thread = None
 miner_address_global = None # Endereço para onde as recompensas de mineração serão enviadas
 
-@app.route('/card') 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 1️⃣ Rota para o Cartão/Banco
+@app.route('/card')
 def card_web():
-    return render_template('card.html')
+    try:
+        return render_template('card.html')
+    except Exception as e:
+        return f"Erro ao carregar card.html: {e}", 500
+
+
+# 2️⃣ Rota do Manifest (PWA)
+@app.route('/manifest.json')
+def manifest():
+    try:
+        return send_from_directory('templates', 'manifest.json', mimetype='application/json')
+    except Exception as e:
+        return f"Erro ao carregar manifest.json: {e}", 500
+
+
+# 3️⃣ Rota do Service Worker
+@app.route('/sw.js')
+def service_worker():
+    try:
+        return send_from_directory('templates', 'sw.js', mimetype='application/javascript')
+    except Exception as e:
+        return f"Erro ao carregar sw.js: {e}", 500
+
+
+# 4️⃣ Rota para Ícones PNG
+@app.route('/<path:filename>')
+def serve_static(filename):
+    if filename.endswith(".png"):
+        return send_from_directory(BASE_DIR, filename, mimetype='icon-192.png')
+    return "Arquivo não encontrado", 404
 
 # --- Funções de Persistência de Peers ---
 def salvar_peers(peers):
