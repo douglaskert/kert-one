@@ -171,7 +171,7 @@ mining_result = multiprocessing.Value('i', -1)
 
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 10
+    ADJUST_INTERVAL = 10# Blocos para recalcular dificuldade
     TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
 
     def __init__(self, conn, node_id):
@@ -709,83 +709,85 @@ class Blockchain:
 
     def resolve_conflicts(self):
         """
-        MODO RESCUE: Força a aceitação dos seeds para sincronizar a rede.
+        Algoritmo de Consenso OTIMIZADO PARA SALDO.
+        Baixa a chain e reconstrói o índice de transações para garantir que o saldo apareça.
         """
-        neighbors = known_nodes.copy()
+        neighbors = list(known_nodes)
         new_chain = None
         current_len = len(self.chain)
         
-        print(f"[CONSENSO] 📡 Analisando {len(neighbors)} caminhos de rede...")
+        print(f"[CONSENSO] 📡 Buscando dados em {len(neighbors)} nós...")
 
         for node_url in neighbors:
             if node_url == meu_url: continue
             try:
-                # Aumentamos o timeout para garantir que baixa tudo
-                response = requests.get(f"{node_url}/chain", timeout=30)
+                # Timeout de 60s para garantir o download completo
+                response = requests.get(f"{node_url}/chain", timeout=60)
                 if response.status_code == 200:
                     data = response.json()
                     peer_chain = data.get("chain")
                     if not peer_chain: continue
 
                     peer_len = len(peer_chain)
-                    print(f"[CONSENSO] Analisando vizinho {node_url} com {peer_len} blocos...")
+                    print(f"[CONSENSO] Peer {node_url}: {peer_len} blocos.")
 
-                    # 🔥 LÓGICA DE RESGATE:
-                    # Se o vizinho tem uma cadeia longa e eu estou no início,
-                    # eu aceito a dele mesmo que a validação falhe (isso corrige o Gênese).
-                    if current_len <= 1 and peer_len > 1:
-                        print(f"[CONSENSO] 🚨 MODO RESGATE: Sincronizando Gênese com {node_url}")
-                        new_chain = peer_chain
-                        break # Sucesso imediato
-
-                    # Se eu já tiver blocos, uso a validação normal
+                    # 🚨 REGRA DE OURO: Se o peer tem mais blocos e a cadeia é válida, EU COPIO.
                     if peer_len > current_len and self.valid_chain(peer_chain):
+                        print(f"[CONSENSO] 📥 Baixando {peer_len - current_len} novos blocos de {node_url}...")
                         new_chain = peer_chain
-                        current_len = peer_len
-                        print(f"[CONSENSO] ✔ Nova cadeia válida encontrada!")
+                        current_len = peer_len # Atualiza para não baixar de outro menor
+                        
+                    # Modo Resgate para Gênese (Se eu sou novo)
+                    elif current_len <= 1 and peer_len > 1:
+                         print(f"[CONSENSO] 🚨 RESGATE: Aceitando cadeia mestre de {node_url}")
+                         new_chain = peer_chain
+                         break 
 
-            except Exception as e:
-                print(f"[CONSENSO] Vizinho {node_url} inacessível.")
+            except Exception:
+                pass
 
         if new_chain:
             self.chain = new_chain
-            self._rebuild_db_from_chain()
-            print(f"[CONSENSO] ✅ Rede sincronizada com sucesso no bloco {len(self.chain)}!")
+            # 🛑 PONTO CRÍTICO: Reconstruir o DB para o saldo aparecer!
+            self._rebuild_db_from_chain() 
+            print(f"[CONSENSO] ✅ Sincronizado! Você está no bloco {len(self.chain)}.")
             return True
+
+        print("[CONSENSO] 🔒 Nada novo na rede.")
         return False
 
     def _rebuild_db_from_chain(self):
-        print("[REBUILD] Reconstruindo dados locais...")
+        print("[REBUILD] 🔨 Reconstruindo índice de transações (Isso faz o saldo aparecer)...")
         try:
             c = self.conn.cursor()
-            c.execute("DELETE FROM txs")
-            c.execute("DELETE FROM blocks")
+            c.execute("DELETE FROM txs")   # Limpa tudo
+            c.execute("DELETE FROM blocks") # Limpa tudo
 
             for block in self.chain:
-                # MUDANÇA: Inserindo 7 valores
+                # 1. Salva o Bloco
                 c.execute("""
-                    INSERT INTO blocks
-                    (index_, previous_hash, proof, timestamp, miner, difficulty, protocol_value)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO blocks (index_, previous_hash, proof, timestamp, miner, difficulty, protocol_value)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
                     block['index'], block['previous_hash'], block['proof'],
                     block['timestamp'], block['miner'], block.get('difficulty', 1),
-                    block.get('protocol_value', 500.0)
+                    block.get('protocol_value', 0.0)
                 ))
 
+                # 2. Salva TODAS as Transações do Bloco (Aqui está o seu dinheiro)
                 for tx in block['transactions']:
                     c.execute("""
-                        INSERT OR IGNORE INTO txs
-                        (id, sender, recipient, amount, fee, signature, block_index, public_key)
+                        INSERT OR IGNORE INTO txs (id, sender, recipient, amount, fee, signature, block_index, public_key)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         tx['id'], tx['sender'], tx['recipient'], tx['amount'],
                         tx['fee'], tx['signature'], block['index'], tx.get('public_key', '')
                     ))
+            
             self.conn.commit()
-            print("[REBUILD] OK")
+            print("[REBUILD] ✅ Banco de dados recriado com sucesso!")
         except Exception as e:
-            print(f"[REBUILD ERRO] {e}")
+            print(f"[REBUILD ERRO] Falha ao reconstruir DB: {e}")
 
     def balance(self, address):
         """Calcula o saldo de um endereço, incluindo transações pendentes."""
@@ -1375,65 +1377,34 @@ def broadcast_block(block):
         print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
 
 def discover_peers():
-    """
-    Descobre e registra peers na rede.
-    Prioriza a conexão com os nós semente (SEED_NODES) para iniciar a descoberta.
-    """
     global known_nodes, meu_url
-    
-    # 1. Adiciona os nós semente à lista de peers conhecidos.
-    for seed in SEED_NODES:
-        if seed not in known_nodes and seed != meu_url:
-            known_nodes.add(seed)
-            print(f"[DISCOVERY] Adicionando nó semente: {seed}")
-    
-    salvar_peers(known_nodes) # Salva a lista atualizada de peers
 
-    # 2. Itera sobre a lista de peers conhecidos (incluindo os nós semente)
-    # para descobrir novos peers e registrar o nó local.
-    initial_peers = list(known_nodes) # Cria uma cópia para iterar
-    for peer in initial_peers:
-        if peer == meu_url:
-            continue # Não tentar conectar a si mesmo
+    # 1. Carrega seeds se a lista estiver vazia (Boot inicial)
+    if len(known_nodes) < 1:
+        load_peers()
+        # Se mesmo assim estiver vazio, usa os hardcoded
+        for s in SEED_NODES: known_nodes.add(s)
+
+    peers_snapshot = list(known_nodes)
+    
+    # 2. Pergunta para os vizinhos: "Quem você conhece?"
+    for peer in peers_snapshot:
+        if peer == meu_url: continue
         try:
-            # Tenta obter a lista de nós conhecidos pelo peer
-            r = requests.get(f"{peer}/nodes", timeout=3)
+            # Timeout curto para não travar
+            r = requests.get(f"{peer}/nodes", timeout=2) 
             if r.status_code == 200:
-                raw_new_peers = r.json().get('nodes', [])
-                new_peers = []
-                for item in raw_new_peers:
-                    if isinstance(item, dict) and 'url' in item:
-                        new_peers.append(item['url'])
-                    elif isinstance(item, str):
-                        new_peers.append(item)
+                remote_nodes = r.json().get("nodes", [])
+                for n in remote_nodes:
+                    # Se o vizinho conhece alguém novo, eu adiciono na minha lista
+                    if n != meu_url and n not in known_nodes:
+                        print(f"[P2P] Novo nó descoberto via fofoca: {n}")
+                        known_nodes.add(n)
+        except:
+            pass
 
-                for np in new_peers:
-                    if np not in known_nodes and np != meu_url:
-                        known_nodes.add(np)
-                        print(f"[DISCOVERY] Descoberto novo peer {np} via {peer}")
-                        salvar_peers(known_nodes) # Salva a lista após cada nova descoberta
-                        
-                        # Tenta registrar o nó local com o novo peer descoberto
-                        try:
-                            parsed_url = urlparse(meu_url)
-                            my_ip = parsed_url.hostname
-                            my_port = parsed_url.port
-                            requests.post(f"{np}/nodes/register", json={'ip': my_ip, 'port': my_port}, timeout=2)
-                        except Exception as e:
-                            print(f"[DISCOVERY ERROR] Falha ao registrar em {np}: {e}")
-
-            # Tenta registrar o nó local com o peer atual (seja ele semente ou descoberto)
-            parsed_url = urlparse(meu_url)
-            my_ip = parsed_url.hostname
-            my_port = parsed_url.port
-            requests.post(f"{peer}/nodes/register", json={'ip': my_ip, 'port': my_port}, timeout=2)
-            
-        except requests.exceptions.RequestException as e:
-            print(f"[DISCOVERY ERROR] Falha ao conectar/descobrir peer {peer}: {e}. Removendo.")
-            # Remove o peer se não for um nó semente e falhar na conexão
-            if peer not in SEED_NODES:
-                known_nodes.discard(peer)
-                salvar_peers(known_nodes)
+    # 3. Salva a lista expandida para o futuro (CORRIGIDO)
+    salvar_peers(known_nodes)
 
 def get_my_ip():
     """Tenta obter o IP local do nó e avisa se for privado."""
@@ -1498,6 +1469,64 @@ def comparar_ultimos_blocos(blockchain_instance):
                 known_nodes.discard(peer)
                 salvar_peers(known_nodes)
 
+def _continuous_mine():
+    """
+    Função de mineração inteligente.
+    Sincroniza com o Seend ANTES de começar a gastar energia.
+    """
+    global mining_active, blockchain, miner_address_global
+    
+    print("[MINER] 🚀 Thread de mineração contínua iniciada (Modo Sincronizado).")
+    
+    while mining_active:
+        try:
+            # 1. SINCRONIZAÇÃO OBRIGATÓRIA ANTES DE MINERAR
+            # Isso garante que não estamos minerando em cima de um bloco velho
+            # print("[MINER] 📡 Verificando se a rede avançou...") 
+            blockchain.resolve_conflicts()
+            
+            # 2. Pega o estado atualizado
+            last_block = blockchain.last_block()
+            if not last_block:
+                print("[MINER ERROR] Blockchain não inicializada. Aguardando 5s...")
+                time.sleep(5)
+                continue
+
+            last_proof = last_block['proof']
+            
+            # Mostra o alvo para o usuário
+            # print(f"[MINER] Preparando para minerar Bloco #{last_block['index'] + 1}...")
+
+            # 3. Inicia o Trabalho Duro (PoW)
+            # A função proof_of_work já tem uma verificação interna se o bloco mudar
+            proof = blockchain.proof_of_work(last_proof)
+
+            # Se retornou -1, é porque alguém achou o bloco antes ou paramos
+            if proof == -1: 
+                print("[MINER] 🛑 Reiniciando ciclo (Bloco encontrado por outro ou parada).")
+                time.sleep(1)
+                continue
+
+            # 4. Se achamos a prova, construímos o bloco e ENVIAMOS
+            previous_hash = blockchain.hash(last_block)
+            new_block = blockchain.new_block(proof, previous_hash, miner_address_global)
+            
+            print(f"💎 [MINER] SUCESSO! Bloco {new_block['index']} minerado! Enviando para o Seend...")
+
+            # 5. Envia imediatamente para a rede
+            broadcast_block(new_block)
+            
+            # Pequena pausa para garantir que o envio saiu
+            time.sleep(2) 
+
+        except Exception as e:
+            print(f"[MINER ERROR] Erro crítico: {e}. Reiniciando em 5s.")
+            time.sleep(5)
+            # Não para a mineração, apenas tenta recuperar
+            continue
+            
+    print("[MINER] Thread de mineração parada.")
+    
 # --- Cliente Kert-One Core GUI (QMainWindow) ---
 # --- Cliente Kert-One Core GUI Corrigido ---
 class KertOneCoreClient(QMainWindow):
@@ -1528,7 +1557,8 @@ class KertOneCoreClient(QMainWindow):
         self.mining_timer.timeout.connect(self.mine_block_via_api)
 
         # 🟢 DINÂMICO: A GUI agora segue a URL global definida no boot
-        self._on_flask_url_ready(meu_url)
+        self._on_flask_url_ready("https://seend.kert-one.com")
+
 
     def update_log_viewer(self, message, message_type="info"):
         color_map = {"info": "#a0a0ff", "success": "#66ff66", "error": "#ff6666", "warning": "#ffff66"}
@@ -1580,14 +1610,14 @@ class KertOneCoreClient(QMainWindow):
         self.tab_send = QWidget()
         self.tab_mine = QWidget()
         self.tab_network = QWidget()
-    
+        
         self.tabs.addTab(self.tab_wallet, "Carteira")
         self.tabs.addTab(self.tab_send, "Enviar")
         self.tabs.addTab(self.tab_mine, "Mineração")
         self.tabs.addTab(self.tab_network, "Rede/Blockchain")
-    
+        
         self.main_layout.addWidget(self.tabs)
-    
+        
         self.log_viewer = QTextEdit() 
         self.log_viewer.setObjectName("LogViewer")
         self.log_viewer.setReadOnly(True)
@@ -1602,16 +1632,20 @@ class KertOneCoreClient(QMainWindow):
         self.setup_send_tab()
         self.setup_mine_tab()
         self.setup_network_tab()
-    
+        
         node_info_group = QGroupBox("Informações do Nó")
         node_info_layout = QFormLayout(node_info_group)
-    
-        self.node_id_label = QLabel(f"<span style='font-weight:bold;'>{node_id[:8]}...</span>")
-        self.node_url_label = QLabel("<span style='font-weight:bold;'>Aguardando...</span>")
-    
+        
+        # --- CORREÇÃO AQUI ---
+        # Antes estava: "Aguardando..."
+        # Agora ele pega a variável global 'meu_url' e já mostra na tela
+        self.node_id_label = QLabel(f"<span style='font-weight:bold;'>{node_id[:16]}...</span>")
+        self.node_url_label = QLabel(f"<span style='font-weight:bold;'>{meu_url}</span>") 
+        # ---------------------
+        
         node_info_layout.addRow("ID do Nó:", self.node_id_label)
         node_info_layout.addRow("URL do Nó:", self.node_url_label)
-    
+        
         self.main_layout.insertWidget(0, node_info_group)
 
         
@@ -2188,49 +2222,67 @@ def run_server():
     # O servidor sempre roda na porta 5001 para o minerador local
     app.run(host='0.0.0.0', port=5001, threaded=True)
 
+# --- Execução Principal OTIMIZADA (Foca apenas no Online) ---
 if __name__ == "__main__":
-    # 1. Setup inicial
+    # 1. Configuração Inicial
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
-    node_id = load_or_create_node_id()
-    blockchain = Blockchain(conn, node_id)
+    node_id_val = load_or_create_node_id()
+    blockchain = Blockchain(conn, node_id_val)
 
-    # 2. Endereço Local
-    port = 5001
+    # 2. Definição de Rede
+    port = int(os.environ.get('PORT', 5001))
     meu_ip = get_my_ip()
     meu_url = f"http://{meu_ip}:{port}"
-    print(f"[BOOT] 🏠 Seu Nó Local: {meu_url}")
+    print(f"[BOOT] 🏠 Nó Local: {meu_url}")
 
-    # 3. 🌍 DESCENTRALIZAÇÃO: Carregar lista de 1000+ peers
-    print("[BOOT] 📡 Carregando rede distribuída...")
+    # 3. 🧹 LIMPEZA DE REDE (A Correção Que Você Pediu) 🧹
+    # Testamos os Seeds antes de começar. Só fica quem estiver vivo.
+    print("[BOOT] 🚦 Testando conectividade com Seeds...")
+    seeds_ativos = []
     
-    # Adiciona os sementes oficiais
     for seed in SEED_NODES:
-        if seed != meu_url:
-            known_nodes.add(seed)
-            
-    # Adiciona peers descobertos anteriormente no peers.json
-    peers_historicos = carregar_peers()
-    for p in peers_historicos:
-        if p != meu_url:
-            known_nodes.add(p)
-            
-    salvar_peers(known_nodes)
-    print(f"[BOOT] Conectado a {len(known_nodes)} possíveis caminhos de rede.")
+        if seed == meu_url: continue
+        try:
+            print(f"   -> Testando {seed}...", end="")
+            # Timeout curto (2s) para não perder tempo com servidor morto
+            r = requests.get(f"{seed}/chain", timeout=2)
+            if r.status_code == 200:
+                print(" ✅ ONLINE")
+                seeds_ativos.append(seed)
+                known_nodes.add(seed)
+            else:
+                print(f" ❌ REJEITADO (Status {r.status_code}) - Ignorando.")
+        except:
+            print(" 💀 OFFLINE - Removendo da lista.")
 
-    # 4. Iniciar Backend (Nó)
+    # Carrega peers do arquivo (se existirem)
+    peers_salvos = carregar_peers()
+    for p in peers_salvos:
+        if p not in SEED_NODES: # Só adiciona se não for um seed já testado
+            known_nodes.add(p)
+
+    salvar_peers(known_nodes)
+    
+    if not seeds_ativos and not peers_salvos:
+        print("[AVISO] ⚠️ Nenhum servidor externo respondendo. Você minerará isolado até alguém conectar.")
+    else:
+        print(f"[BOOT] 🎯 Focando em {len(known_nodes)} nós ativos.")
+
+    # 4. Iniciar Servidor
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
     time.sleep(2) 
 
-    # 5. Sincronizar com a "Verdade" da rede
-    print("[BOOT] 🔄 Sincronizando com a maior cadeia disponível...")
-    discover_peers()
-    blockchain.resolve_conflicts()
-
-    # 6. Rodar Verificador e Interface
+    # 5. Sincronização Focada
+    if len(known_nodes) > 0:
+        print("[BOOT] 🔄 Sincronizando apenas com nós ativos...")
+        blockchain.resolve_conflicts()
+    
+    # 6. Processos de Fundo
     threading.Thread(target=auto_sync_checker, args=(blockchain,), daemon=True).start()
 
-    print("[GUI] 🚀 Iniciando Interface Gráfica...")
+    # 7. Interface
+    print("[GUI] 🚀 Iniciando Interface...")
     qt_app = QApplication(sys.argv)
     window = KertOneCoreClient()
     window.show()
