@@ -249,7 +249,7 @@ def chain_chunk_api():
 
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 10
+    ADJUST_INTERVAL = 2016
     TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
     TARGET_WINDOW = ADJUST_INTERVAL * TARGET_TIME
 
@@ -1598,36 +1598,72 @@ def broadcast_block(block):
         salvar_peers(known_nodes)
         print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
 
-def discover_peers():
-    global known_nodes, meu_url
-    # print("[DISCOVERY] Varrendo peers...") # Comentado para poluir menos o log
 
-    # Carrega seeds se necessário
-    if len(known_nodes) < 1:
-        load_peers()
-        fetch_github_nodes()
+
+def discover_peers():
+    """
+    Descobre peers e mantém apenas peers ONLINE no peers.json.
+    - Verifica /chain para checar se o peer está vivo.
+    - Puxa /nodes/share para aprender novos peers.
+    - Remove peers que não respondem.
+    - Não remove meu_url.
+    """
+    global known_nodes, meu_url
 
     peers_snapshot = list(known_nodes)
-    peers_to_remove = set() # Lista para remover nós mortos
+    online_peers = set()
 
     for peer in peers_snapshot:
-        if peer == meu_url:
+        if not peer or peer == meu_url:
+            # mantém meu_url protegido (não remove)
+            if peer == meu_url:
+                online_peers.add(peer)
             continue
-        try:
-            # TIMEOUT REDUZIDO PARA 2 SEGUNDOS
-            # Se o peer não responder rápido, ignoramos para não travar a mineração
-            r = requests.get(f"{peer}/nodes", timeout=2)
-            
-            if r.status_code == 200:
-                remote_nodes = r.json().get("nodes", [])
-                for n in remote_nodes:
-                    if n != meu_url and n not in known_nodes:
-                        known_nodes.add(n)
-        except:
-            # Se der erro, apenas ignora, não remove imediatamente para não perder seeds temporariamente offline
-            pass
 
-    save_peers()
+        try:
+            # Verifica se peer está online usando /chain (mais "pesado" mas confiável)
+            r = requests.get(f"{peer.rstrip('/')}/chain", timeout=3)
+
+            if r.status_code == 200:
+                online_peers.add(peer.rstrip('/'))
+
+                # Puxa peers desse peer via /nodes/share (se existir)
+                try:
+                    r2 = requests.get(f"{peer.rstrip('/')}/nodes/share", timeout=3)
+                    if r2.status_code == 200:
+                        remote_nodes = r2.json()
+                        if isinstance(remote_nodes, list):
+                            for n in remote_nodes:
+                                if not n:
+                                    continue
+                                n = n.strip().rstrip('/')
+                                if n and n != meu_url:
+                                    online_peers.add(n)
+                except Exception:
+                    # falha ao puxar nodes/share não tira o peer online
+                    pass
+            else:
+                # resposta não-200 -> considera offline (não adiciona)
+                print(f"[P2P] Peer respondeu com status {r.status_code}, removendo temporariamente: {peer}")
+        except Exception:
+            # timeout ou erro de conexão -> peer off
+            print(f"[P2P] Peer offline removido temporariamente: {peer}")
+
+    # Evita remover meu_url mesmo que não esteja na lista de peers
+    if meu_url:
+        online_peers.add(meu_url)
+
+    # Atualiza known_nodes com apenas os online peers
+    known_nodes = set(online_peers)
+
+    try:
+        # Salva peers atualizados em peers.json (formatação ordenada)
+        with open(PEERS_FILE, 'w') as f:
+            json.dump(sorted(list(known_nodes)), f, indent=2)
+        print(f"[P2P] peers.json atualizado. Peers online: {len(known_nodes)}")
+    except Exception as e:
+        print(f"[P2P] Falha ao salvar peers.json: {e}")
+
 
 def get_my_ip():
     """Tenta obter o IP local do nó e avisa se for privado."""
@@ -1723,7 +1759,7 @@ def broadcast_new_block(block):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 8001))
+    port = int(os.environ.get('PORT', 5001))
 
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
