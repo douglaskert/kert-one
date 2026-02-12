@@ -1751,7 +1751,7 @@ def broadcast_new_block(block):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 8001))
+    port = int(os.environ.get('PORT', 5001))
 
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
