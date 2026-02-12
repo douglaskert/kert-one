@@ -780,40 +780,54 @@ class Blockchain:
     def resolve_conflicts(self):
         neighbors = list(known_nodes)
         new_chain = None
-        current_len = len(self.chain)
+
+        my_total_difficulty = self.get_total_difficulty(self.chain)
+
         print(f"[CONSENSO] Verificando {len(neighbors)} vizinhos...")
+        print(f"[CONSENSO] Minha dificuldade acumulada: {my_total_difficulty}")
 
         for node_url in neighbors:
-            if node_url == meu_url: continue
+            if node_url == meu_url:
+                continue
+
             try:
-                # Aumente o timeout para 60s para garantir o download da rede oficial
-                response = requests.get(f"{node_url}/chain", timeout=60)
-                if response.status_code == 200:
-                    data = response.json()
-                    peer_chain = data.get("chain")
-                    if not peer_chain: continue
+                response = requests.get(f"{node_url}/chain", timeout=20)
 
-                    peer_len = len(peer_chain)
-                    
-                    # 🚨 LÓGICA DE RESGATE: Se eu sou novo e o vizinho é grande, aceito ele.
-                    if current_len <= 1 and peer_len > 1:
-                        print(f"[CONSENSO] 🚨 MODO RESGATE: Sincronizando com {node_url}")
-                        new_chain = peer_chain
-                        break
+                if response.status_code != 200:
+                    continue
 
-                    # Validação normal
-                    if peer_len > current_len and self.valid_chain(peer_chain):
-                        new_chain = peer_chain
-                        current_len = peer_len
-            except:
+                data = response.json()
+                peer_chain = data.get("chain")
+
+                if not peer_chain:
+                    continue
+    
+                if not self.valid_chain(peer_chain):
+                    print(f"[CONSENSO] Cadeia inválida de {node_url}")
+                    continue
+
+                peer_total_difficulty = self.get_total_difficulty(peer_chain)
+
+                print(f"[CONSENSO] {node_url} dificuldade acumulada: {peer_total_difficulty}")
+
+                # 🔥 REGRA REAL DE CONSENSO (Bitcoin-like)
+                if peer_total_difficulty > my_total_difficulty:
+                    print(f"[CONSENSO] Nova cadeia mais forte encontrada em {node_url}")
+                    new_chain = peer_chain
+                    my_total_difficulty = peer_total_difficulty
+
+            except Exception as e:
                 continue
 
         if new_chain:
+            print("[CONSENSO] 🔄 Atualizando cadeia local...")
             self.chain = new_chain
             self._rebuild_db_from_chain()
+            print(f"[CONSENSO] ✅ Sincronizado no bloco {len(self.chain)}")
             return True
-        return False
 
+        print("[CONSENSO] 🔒 Nenhuma cadeia superior encontrada.")
+        return False
 
     def _rebuild_db_from_chain(self):
         print("[REBUILD] Reconstruindo dados locais...")
@@ -1598,72 +1612,36 @@ def broadcast_block(block):
         salvar_peers(known_nodes)
         print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
 
-
-
 def discover_peers():
-    """
-    Descobre peers e mantém apenas peers ONLINE no peers.json.
-    - Verifica /chain para checar se o peer está vivo.
-    - Puxa /nodes/share para aprender novos peers.
-    - Remove peers que não respondem.
-    - Não remove meu_url.
-    """
     global known_nodes, meu_url
+    # print("[DISCOVERY] Varrendo peers...") # Comentado para poluir menos o log
+
+    # Carrega seeds se necessário
+    if len(known_nodes) < 1:
+        load_peers()
+        fetch_github_nodes()
 
     peers_snapshot = list(known_nodes)
-    online_peers = set()
+    peers_to_remove = set() # Lista para remover nós mortos
 
     for peer in peers_snapshot:
-        if not peer or peer == meu_url:
-            # mantém meu_url protegido (não remove)
-            if peer == meu_url:
-                online_peers.add(peer)
+        if peer == meu_url:
             continue
-
         try:
-            # Verifica se peer está online usando /chain (mais "pesado" mas confiável)
-            r = requests.get(f"{peer.rstrip('/')}/chain", timeout=3)
-
+            # TIMEOUT REDUZIDO PARA 2 SEGUNDOS
+            # Se o peer não responder rápido, ignoramos para não travar a mineração
+            r = requests.get(f"{peer}/nodes", timeout=2)
+            
             if r.status_code == 200:
-                online_peers.add(peer.rstrip('/'))
+                remote_nodes = r.json().get("nodes", [])
+                for n in remote_nodes:
+                    if n != meu_url and n not in known_nodes:
+                        known_nodes.add(n)
+        except:
+            # Se der erro, apenas ignora, não remove imediatamente para não perder seeds temporariamente offline
+            pass
 
-                # Puxa peers desse peer via /nodes/share (se existir)
-                try:
-                    r2 = requests.get(f"{peer.rstrip('/')}/nodes/share", timeout=3)
-                    if r2.status_code == 200:
-                        remote_nodes = r2.json()
-                        if isinstance(remote_nodes, list):
-                            for n in remote_nodes:
-                                if not n:
-                                    continue
-                                n = n.strip().rstrip('/')
-                                if n and n != meu_url:
-                                    online_peers.add(n)
-                except Exception:
-                    # falha ao puxar nodes/share não tira o peer online
-                    pass
-            else:
-                # resposta não-200 -> considera offline (não adiciona)
-                print(f"[P2P] Peer respondeu com status {r.status_code}, removendo temporariamente: {peer}")
-        except Exception:
-            # timeout ou erro de conexão -> peer off
-            print(f"[P2P] Peer offline removido temporariamente: {peer}")
-
-    # Evita remover meu_url mesmo que não esteja na lista de peers
-    if meu_url:
-        online_peers.add(meu_url)
-
-    # Atualiza known_nodes com apenas os online peers
-    known_nodes = set(online_peers)
-
-    try:
-        # Salva peers atualizados em peers.json (formatação ordenada)
-        with open(PEERS_FILE, 'w') as f:
-            json.dump(sorted(list(known_nodes)), f, indent=2)
-        print(f"[P2P] peers.json atualizado. Peers online: {len(known_nodes)}")
-    except Exception as e:
-        print(f"[P2P] Falha ao salvar peers.json: {e}")
-
+    save_peers()
 
 def get_my_ip():
     """Tenta obter o IP local do nó e avisa se for privado."""
