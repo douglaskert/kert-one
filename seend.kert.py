@@ -917,9 +917,9 @@ def receive_transaction_api():
 
 # --- Configurações Web3 (Mantidas) ---
 ETH_RPC_URL = "https://rpc.ankr.com/eth" 
-WKERT_CONTRACT = "0x12f40def427635c896d65bf5934d04654da29190"
-ADMIN_PRIVATE_KEY_ETH = "e7b2b7720bb46798bfa65ccd06502d657acc4e3954a7b0149993952d1cfe0098"
-ADMIN_KERT_ADDR = "3e128f4c1045cb2cf7ad48215c421824207b7905"
+WKERT_CONTRACT = ""
+ADMIN_PRIVATE_KEY_ETH = ""
+ADMIN_KERT_ADDR = ""
 
 w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL))
         
@@ -1186,7 +1186,7 @@ def comparar_ultimos_blocos(blockchain_instance):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 5001))
+    port = int(os.environ.get('PORT', 8001))
 
     # Aumentado timeout do sqlite para evitar "database locked"
     conn = sqlite3.connect(DATABASE, check_same_thread=False, timeout=10)
