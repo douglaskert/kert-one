@@ -1336,15 +1336,7 @@ def receive_transaction_api():
         print(f"[RECEIVE TX ERROR] Erro inesperado ao processar TX {tx_data.get('id')}: {e}")
         return jsonify({'message': f'Erro interno ao processar transação: {e}'}), 500
 
-from web3 import Web3
 
-# --- CONFIGURAÇÕES DA PONTE ---
-ETH_RPC_URL = "https://rpc.ankr.com/eth" # Ou Infura/Alchemy
-WKERT_CONTRACT = ""
-ADMIN_PRIVATE_KEY_ETH = "" # Para enviar WKERT
-ADMIN_KERT_ADDR = "" # Seu cofre nativo
-
-w3 = Web3(Web3.HTTPProvider(ETH_RPC_URL))
         
 def verify_signature(public_key_hex, signature_hex, tx_data):
     """
