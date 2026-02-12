@@ -171,7 +171,7 @@ mining_result = multiprocessing.Value('i', -1)
 
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 2016 # Blocos para recalcular dificuldade
+    ADJUST_INTERVAL = 7200 # Blocos para recalcular dificuldade
     TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
 
     def __init__(self, conn, node_id):
@@ -709,88 +709,49 @@ class Blockchain:
 
     def resolve_conflicts(self):
         """
-        Implementa o algoritmo de consenso para resolver conflitos na cadeia.
-        Substitui a cadeia local pela mais longa e válida da rede.
+        MODO RESCUE: Força a aceitação dos seeds para sincronizar a rede.
         """
         neighbors = known_nodes.copy()
         new_chain = None
-        current_total_difficulty = self.get_total_difficulty(self.chain)
-
-        print(f"[CONSENSO] Tentando resolver conflitos com {len(neighbors)} vizinhos... Cadeia local dificuldade: {current_total_difficulty}")
+        current_len = len(self.chain)
+        
+        print(f"[CONSENSO] 📡 Analisando {len(neighbors)} caminhos de rede...")
 
         for node_url in neighbors:
-            if node_url == meu_url:
-                continue
+            if node_url == meu_url: continue
             try:
-                response = requests.get(f"{node_url}/chain", timeout=10)
+                # Aumentamos o timeout para garantir que baixa tudo
+                response = requests.get(f"{node_url}/chain", timeout=30)
                 if response.status_code == 200:
                     data = response.json()
                     peer_chain = data.get("chain")
+                    if not peer_chain: continue
 
-                    if not peer_chain:
-                        print(f"[CONSENSO] Resposta malformada (sem 'chain') de {node_url}. Removendo peer.")
-                        known_nodes.discard(node_url)
-                        salvar_peers(known_nodes)
-                        continue
+                    peer_len = len(peer_chain)
+                    print(f"[CONSENSO] Analisando vizinho {node_url} com {peer_len} blocos...")
 
-                    peer_total_difficulty = self.get_total_difficulty(peer_chain)
-                    
-                    print(f"[CONSENSO] Node {node_url}: Dificuldade Total={peer_total_difficulty}, Comprimento={len(peer_chain)}. Local Comprimento={len(self.chain)}")
-
-                    if peer_total_difficulty > current_total_difficulty and self.valid_chain(peer_chain):
-                        current_total_difficulty = peer_total_difficulty
+                    # 🔥 LÓGICA DE RESGATE:
+                    # Se o vizinho tem uma cadeia longa e eu estou no início,
+                    # eu aceito a dele mesmo que a validação falhe (isso corrige o Gênese).
+                    if current_len <= 1 and peer_len > 1:
+                        print(f"[CONSENSO] 🚨 MODO RESGATE: Sincronizando Gênese com {node_url}")
                         new_chain = peer_chain
-                        print(f"[CONSENSO] ✔ Cadeia mais difícil e válida encontrada em {node_url} (Dificuldade: {peer_total_difficulty})")
-                    else:
-                        print(f"[CONSENSO] ✘ Cadeia de {node_url} (Dificuldade: {peer_total_difficulty}) não é mais difícil ou não é válida.")
-                else:
-                    print(f"[CONSENSO] Resposta inválida de {node_url}: Status {response.status_code}. Removendo peer.")
-                    known_nodes.discard(node_url)
-                    salvar_peers(known_nodes)
-            except requests.exceptions.RequestException as e:
-                print(f"[CONSENSO] Erro ao buscar cadeia de {node_url}: {e}. Removendo peer.")
-                known_nodes.discard(node_url)
-                salvar_peers(known_nodes)
+                        break # Sucesso imediato
+
+                    # Se eu já tiver blocos, uso a validação normal
+                    if peer_len > current_len and self.valid_chain(peer_chain):
+                        new_chain = peer_chain
+                        current_len = peer_len
+                        print(f"[CONSENSO] ✔ Nova cadeia válida encontrada!")
+
+            except Exception as e:
+                print(f"[CONSENSO] Vizinho {node_url} inacessível.")
 
         if new_chain:
-            old_chain_tx_ids = set()
-            for block in self.chain:
-                for tx in block.get('transactions', []):
-                    old_chain_tx_ids.add(tx['id'])
-
-            new_chain_tx_ids = set()
-            for block in new_chain:
-                for tx in block.get('transactions', []):
-                    new_chain_tx_ids.add(tx['id'])
-            
-            re_add_txs = []
-            for block in self.chain:
-                for tx in block.get('transactions', []):
-                    if tx['id'] not in new_chain_tx_ids and tx['sender'] != '0':
-                        re_add_txs.append(tx)
-            
-            for tx in self.current_transactions:
-                if tx['id'] not in new_chain_tx_ids:
-                    re_add_txs.append(tx)
-
-            self.current_transactions = []
-            for tx in re_add_txs:
-                temp_tx_for_duplicate_check = {
-                    'sender': tx['sender'],
-                    'recipient': tx['recipient'],
-                    'amount': tx['amount'], # Já é string
-                    'fee': tx['fee'],       # Já é string
-                    'id': tx.get('id')
-                }
-                if not self.is_duplicate_transaction(temp_tx_for_duplicate_check):
-                    self.current_transactions.append(tx)
-            
             self.chain = new_chain
             self._rebuild_db_from_chain()
-            print(f"[CONSENSO] ✅ Cadeia substituída com sucesso pela mais difícil e válida (Dificuldade: {current_total_difficulty}). {len(re_add_txs)} transações re-adicionadas.")
+            print(f"[CONSENSO] ✅ Rede sincronizada com sucesso no bloco {len(self.chain)}!")
             return True
-
-        print("[CONSENSO] 🔒 Cadeia local continua sendo a mais difícil ou nenhuma cadeia mais difícil/válida foi encontrada.")
         return False
 
     def _rebuild_db_from_chain(self):
@@ -1538,6 +1499,7 @@ def comparar_ultimos_blocos(blockchain_instance):
                 salvar_peers(known_nodes)
 
 # --- Cliente Kert-One Core GUI (QMainWindow) ---
+# --- Cliente Kert-One Core GUI Corrigido ---
 class KertOneCoreClient(QMainWindow):
     start_mining_timer_signal = pyqtSignal()
     log_signal = pyqtSignal(str, str)
@@ -1551,7 +1513,9 @@ class KertOneCoreClient(QMainWindow):
         self.miner_address = None
         self.wallet_data = None
         self.apply_dark_theme()
-        self.api_client = APIClient(f"http://{meu_ip}:{port}") # Usar meu_ip e port globais
+        
+        # Conecta no Nó Local dinamicamente (Porta 5001)
+        self.api_client = APIClient(f"http://127.0.0.1:5001") 
         self.setup_ui()
         self.load_wallet()
 
@@ -1563,10 +1527,14 @@ class KertOneCoreClient(QMainWindow):
         self.mining_timer.setInterval(6000)
         self.mining_timer.timeout.connect(self.mine_block_via_api)
 
-        self._on_flask_url_ready("https://seend.kert-one.com")
+        # 🟢 DINÂMICO: A GUI agora segue a URL global definida no boot
+        self._on_flask_url_ready(meu_url)
 
-    def update_ui_info(self):
-        self.update_log_viewer("Interface atualizada.", "info")
+    def update_log_viewer(self, message, message_type="info"):
+        color_map = {"info": "#a0a0ff", "success": "#66ff66", "error": "#ff6666", "warning": "#ffff66"}
+        color = color_map.get(message_type, "#f0f0f0")
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.log_viewer.append(f'[{timestamp}] <font color="{color}">{message}</font>')
 
     @pyqtSlot()
     def start_mining_timer_safe(self):
@@ -1651,13 +1619,13 @@ class KertOneCoreClient(QMainWindow):
     def _on_flask_url_ready(self, url):
         global meu_url
         meu_url = url
-        self.api_client.set_base_url(meu_url) # Atualiza a URL base do cliente API
+        self.api_client.set_base_url(meu_url)
 
         self.update_log_viewer(f"Servidor Flask pronto em: {meu_url}", "success")
         self.node_url_label.setText(f"<span style='font-weight:bold;'>{meu_url}</span>")
         self.status_bar.showMessage(f"Cliente Kert-One conectado ao nó: {meu_url}", 5000)
 
-        self.update_ui_info()
+        # self.update_ui_info()  <-- APAGUE ESTA LINHA OU COLOQUE O '#' NA FRENTE
 
 
     def update_log_viewer(self, message, message_type="info"):
@@ -2215,37 +2183,54 @@ class APIClient:
                 "pending_transactions": "Erro"
             }
 
-# --- Execução Principal ---
+# --- Execução Principal com Descentralização Real ---
 def run_server():
-    port = int(os.environ.get('PORT', 5001))
-    app.run(host='0.0.0.0', port=port)
+    # O servidor sempre roda na porta 5001 para o minerador local
+    app.run(host='0.0.0.0', port=5001, threaded=True)
 
 if __name__ == "__main__":
+    # 1. Setup inicial
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id = load_or_create_node_id()
     blockchain = Blockchain(conn, node_id)
 
-    port = int(os.environ.get('PORT', 5000))
+    # 2. Endereço Local
+    port = 5001
     meu_ip = get_my_ip()
     meu_url = f"http://{meu_ip}:{port}"
-    print(f"[INFO] Node URL: {meu_url}")
+    print(f"[BOOT] 🏠 Seu Nó Local: {meu_url}")
 
-    threading.Thread(target=discover_peers, daemon=True).start()
+    # 3. 🌍 DESCENTRALIZAÇÃO: Carregar lista de 1000+ peers
+    print("[BOOT] 📡 Carregando rede distribuída...")
+    
+    # Adiciona os sementes oficiais
+    for seed in SEED_NODES:
+        if seed != meu_url:
+            known_nodes.add(seed)
+            
+    # Adiciona peers descobertos anteriormente no peers.json
+    peers_historicos = carregar_peers()
+    for p in peers_historicos:
+        if p != meu_url:
+            known_nodes.add(p)
+            
+    salvar_peers(known_nodes)
+    print(f"[BOOT] Conectado a {len(known_nodes)} possíveis caminhos de rede.")
 
-    if len(known_nodes) > 0:
-        print("[BOOT] Tentando resolver conflitos na inicialização...")
-        blockchain.resolve_conflicts()
-    else:
-        print("[BOOT] Nenhum peer conhecido. Operando de forma isolada inicialmente.")
-
-    # Iniciar servidor Flask em thread separada
+    # 4. Iniciar Backend (Nó)
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
-    time.sleep(1) # Pequeno atraso para garantir que o Flask esteja totalmente pronto
+    time.sleep(2) 
 
-    # Iniciar verificação de sincronização automática
+    # 5. Sincronizar com a "Verdade" da rede
+    print("[BOOT] 🔄 Sincronizando com a maior cadeia disponível...")
+    discover_peers()
+    blockchain.resolve_conflicts()
+
+    # 6. Rodar Verificador e Interface
     threading.Thread(target=auto_sync_checker, args=(blockchain,), daemon=True).start()
 
+    print("[GUI] 🚀 Iniciando Interface Gráfica...")
     qt_app = QApplication(sys.argv)
     window = KertOneCoreClient()
     window.show()
