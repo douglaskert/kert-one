@@ -233,11 +233,23 @@ def auto_sync():
 threading.Thread(target=periodic_network_maintenance, daemon=True).start()
 threading.Thread(target=auto_sync, daemon=True).start()
 
-
+# CÓDIGO PARA O SERVIDOR SEEND (Sugestão de melhoria)
+@app.route('/chain/chunk', methods=['GET'])
+def chain_chunk_api():
+    try:
+        start = int(request.args.get('start', 0))
+        end = int(request.args.get('end', len(blockchain.chain)))
+        # Limita para não travar o servidor (ex: máx 1000 blocos por vez)
+        if end - start > 1000: end = start + 1000
+        
+        chunk = blockchain.chain[start:end]
+        return jsonify({'chain': chunk, 'start': start, 'end': end, 'total': len(blockchain.chain)}), 200
+    except:
+        return jsonify({'error': 'Invalid params'}), 400
 
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 10 #Blocos para recalcular dificuldade
+    ADJUST_INTERVAL = 7200 #Blocos para recalcular dificuldade
     TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
     TARGET_WINDOW = ADJUST_INTERVAL * TARGET_TIME
 
@@ -766,72 +778,40 @@ class Blockchain:
         return total_difficulty
 
     def resolve_conflicts(self):
-        global known_nodes
-
         neighbors = list(known_nodes)
         new_chain = None
-
-        current_total_difficulty = self.get_total_difficulty(self.chain)
-        current_length = len(self.chain)
-
-        print(f"[CONSENSO] Nós vizinhos: {len(neighbors)} | Dificuldade local: {current_total_difficulty} | Blocos: {current_length}")
-
-        peers_to_remove = set()
+        current_len = len(self.chain)
+        print(f"[CONSENSO] Verificando {len(neighbors)} vizinhos...")
 
         for node_url in neighbors:
-            if node_url == meu_url:
+            if node_url == meu_url: continue
+            try:
+                # Aumente o timeout para 60s para garantir o download da rede oficial
+                response = requests.get(f"{node_url}/chain", timeout=60)
+                if response.status_code == 200:
+                    data = response.json()
+                    peer_chain = data.get("chain")
+                    if not peer_chain: continue
+
+                    peer_len = len(peer_chain)
+                    
+                    # 🚨 LÓGICA DE RESGATE: Se eu sou novo e o vizinho é grande, aceito ele.
+                    if current_len <= 1 and peer_len > 1:
+                        print(f"[CONSENSO] 🚨 MODO RESGATE: Sincronizando com {node_url}")
+                        new_chain = peer_chain
+                        break
+
+                    # Validação normal
+                    if peer_len > current_len and self.valid_chain(peer_chain):
+                        new_chain = peer_chain
+                        current_len = peer_len
+            except:
                 continue
 
-            try:
-                print(f"[CONSENSO] Consultando {node_url}...")
-                response = requests.get(f"{node_url}/chain", timeout=8)
-
-                if response.status_code != 200:
-                    peers_to_remove.add(node_url)
-                    continue
-
-                data = response.json()
-                peer_chain = data.get("chain")
-
-                if not peer_chain:
-                    peers_to_remove.add(node_url)
-                    continue
-
-                peer_difficulty = self.get_total_difficulty(peer_chain)
-                peer_length = len(peer_chain)
-
-                print(f"[CONSENSO] Peer {node_url} → diff={peer_difficulty} | len={peer_length}")
-
-                if self.valid_chain(peer_chain):
-                    if (
-                        peer_difficulty > current_total_difficulty or
-                        (peer_difficulty == current_total_difficulty and peer_length > current_length)
-                    ):
-                        print(f"[CONSENSO] ✔ Nova melhor cadeia encontrada em {node_url}")
-                        current_total_difficulty = peer_difficulty
-                        current_length = peer_length
-                        new_chain = peer_chain
-
-            except Exception as e:
-                print(f"[CONSENSO] Erro com peer {node_url}: {e}")
-                peers_to_remove.add(node_url)
-
-        for peer in peers_to_remove:
-            if peer not in SEED_NODES:
-                known_nodes.discard(peer)
-
-        if peers_to_remove:
-           salvar_peers(known_nodes)
-
         if new_chain:
-            print("[CONSENSO] 🔄 Substituindo cadeia local pela da rede...")
             self.chain = new_chain
             self._rebuild_db_from_chain()
-            print("[CONSENSO] ✅ Sincronização total concluída.")
             return True
-
-        self._rebuild_db_from_chain()
-        print("[CONSENSO] Cadeia local mantida, DB verificado.")
         return False
 
 
