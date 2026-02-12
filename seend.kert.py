@@ -258,7 +258,10 @@ class Blockchain:
 
             print(f"[DIFF ADJUST] Antiga={old_diff} Nova={new_diff} (Tempo real: {actual_time}s)")
 
-            return max(1, new_diff)
+            # LIMITA O MÁXIMO A 64 (tamanho do hash SHA-256)
+            # Isso evita que a dificuldade peça mais zeros do que existem no hash
+            return min(64, max(1, new_diff))
+            
         except Exception as e:
             print(f"[DIFF ERROR] Erro ao calcular dificuldade: {e}. Mantendo anterior.")
             return self.chain[-1].get('difficulty', DIFFICULTY)
@@ -1183,7 +1186,7 @@ def comparar_ultimos_blocos(blockchain_instance):
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
-    port = int(os.environ.get('PORT', 8001))
+    port = int(os.environ.get('PORT', 5001))
 
     # Aumentado timeout do sqlite para evitar "database locked"
     conn = sqlite3.connect(DATABASE, check_same_thread=False, timeout=10)
@@ -1195,7 +1198,7 @@ def run_server():
  
     if public_url:
         meu_url = public_url.rstrip('/')
-        print(f"[INFO] 🌍 URL pública: {meu_url}") 
+        print(f"[INFO] 🌍 URL pública: {meu_url}")
     else:
         meu_url = f"http://{meu_ip}:{port}"
         print(f"[INFO] URL local: {meu_url}")
