@@ -249,7 +249,7 @@ def chain_chunk_api():
 
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 7200 #Blocos para recalcular dificuldade
+    ADJUST_INTERVAL = 10
     TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
     TARGET_WINDOW = ADJUST_INTERVAL * TARGET_TIME
 
