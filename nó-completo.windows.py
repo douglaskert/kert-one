@@ -913,28 +913,57 @@ def chain_api():
 
 @app.route('/nodes/register', methods=['POST'])
 def register_nodes_api():
-    data = request.get_json()
-    new_node_ip = data.get('ip')
-    new_node_port = data.get('port')
+    data = request.get_json(silent=True) or {}
 
-    if not new_node_ip or not new_node_port:
-        return jsonify({"message": "IP ou porta inválidos/ausentes."}), 400
+    # 🔹 Aceita formato {"url": "..."} OU {"ip": "...", "port": "..."}
+    new_node_url = data.get("url")
 
-    new_node_url = f"http://{new_node_ip}:{new_node_port}"
+    if not new_node_url:
+        new_node_ip = data.get("ip")
+        new_node_port = data.get("port")
 
-    if new_node_url != meu_url:
-        if new_node_url not in known_nodes:
-            known_nodes.add(new_node_url)
-            salvar_peers(known_nodes)
-            print(f"[INFO] Peer {new_node_url} registrado.")
-        else:
-            print(f"[INFO] Peer {new_node_url} já estava registrado. Atualizando, se necessário.")
+        if not new_node_ip or not new_node_port:
+            return jsonify({"message": "IP/porta ou URL inválidos."}), 400
+
+        new_node_url = f"http://{new_node_ip}:{new_node_port}"
+
+    # 🔹 Normaliza URL
+    new_node_url = new_node_url.strip().rstrip("/")
+    if not new_node_url.startswith("http://") and not new_node_url.startswith("https://"):
+        new_node_url = "http://" + new_node_url
+
+    global meu_url
+
+    # 🔹 Evita registrar a si mesmo
+    if new_node_url == meu_url:
+        print(f"[INFO] Recebi meu próprio registro ({new_node_url}). Ignorando.")
+        return jsonify({
+            "message": "Self ignored",
+            "known_peers": list(known_nodes)
+        }), 200
+
+    # 🔹 Adiciona peer se não existir
+    if new_node_url not in known_nodes:
+        known_nodes.add(new_node_url)
+        salvar_peers(known_nodes)
+        print(f"[P2P] Novo peer registrado: {new_node_url}")
+
+        # 🔥 REGISTRO BIDIRECIONAL AUTOMÁTICO (remove dependência de seed)
+        try:
+            requests.post(
+                f"{new_node_url}/nodes/register",
+                json={"url": meu_url},
+                timeout=5
+            )
+        except Exception as e:
+            print(f"[P2P] Falha no registro reverso: {e}")
+
     else:
-        print(f"[INFO] Recebi meu próprio registro: {new_node_url}. Ignorando.")
+        print(f"[P2P] Peer já conhecido: {new_node_url}")
 
     return jsonify({
-        'message': f"Peer {new_node_url} registrado ou atualizado.",
-        'known_peers': list(known_nodes)
+        "message": f"Peer {new_node_url} registrado.",
+        "known_peers": list(known_nodes)
     }), 200
 
 @app.route('/nodes', methods=['GET'])
@@ -1376,35 +1405,72 @@ def broadcast_block(block):
         salvar_peers(known_nodes)
         print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
 
+
+
 def discover_peers():
+    """
+    Descobre peers e mantém apenas peers ONLINE no peers.json.
+    - Verifica /chain para checar se o peer está vivo.
+    - Puxa /nodes/share para aprender novos peers.
+    - Remove peers que não respondem.
+    - Não remove meu_url.
+    """
     global known_nodes, meu_url
 
-    # 1. Carrega seeds se a lista estiver vazia (Boot inicial)
-    if len(known_nodes) < 1:
-        load_peers()
-        # Se mesmo assim estiver vazio, usa os hardcoded
-        for s in SEED_NODES: known_nodes.add(s)
-
     peers_snapshot = list(known_nodes)
-    
-    # 2. Pergunta para os vizinhos: "Quem você conhece?"
-    for peer in peers_snapshot:
-        if peer == meu_url: continue
-        try:
-            # Timeout curto para não travar
-            r = requests.get(f"{peer}/nodes", timeout=2) 
-            if r.status_code == 200:
-                remote_nodes = r.json().get("nodes", [])
-                for n in remote_nodes:
-                    # Se o vizinho conhece alguém novo, eu adiciono na minha lista
-                    if n != meu_url and n not in known_nodes:
-                        print(f"[P2P] Novo nó descoberto via fofoca: {n}")
-                        known_nodes.add(n)
-        except:
-            pass
+    online_peers = set()
 
-    # 3. Salva a lista expandida para o futuro (CORRIGIDO)
-    salvar_peers(known_nodes)
+    for peer in peers_snapshot:
+        if not peer or peer == meu_url:
+            # mantém meu_url protegido (não remove)
+            if peer == meu_url:
+                online_peers.add(peer)
+            continue
+
+        try:
+            # Verifica se peer está online usando /chain (mais "pesado" mas confiável)
+            r = requests.get(f"{peer.rstrip('/')}/chain", timeout=3)
+
+            if r.status_code == 200:
+                online_peers.add(peer.rstrip('/'))
+
+                # Puxa peers desse peer via /nodes/share (se existir)
+                try:
+                    r2 = requests.get(f"{peer.rstrip('/')}/nodes/share", timeout=3)
+                    if r2.status_code == 200:
+                        remote_nodes = r2.json()
+                        if isinstance(remote_nodes, list):
+                            for n in remote_nodes:
+                                if not n:
+                                    continue
+                                n = n.strip().rstrip('/')
+                                if n and n != meu_url:
+                                    online_peers.add(n)
+                except Exception:
+                    # falha ao puxar nodes/share não tira o peer online
+                    pass
+            else:
+                # resposta não-200 -> considera offline (não adiciona)
+                print(f"[P2P] Peer respondeu com status {r.status_code}, removendo temporariamente: {peer}")
+        except Exception:
+            # timeout ou erro de conexão -> peer off
+            print(f"[P2P] Peer offline removido temporariamente: {peer}")
+
+    # Evita remover meu_url mesmo que não esteja na lista de peers
+    if meu_url:
+        online_peers.add(meu_url)
+
+    # Atualiza known_nodes com apenas os online peers
+    known_nodes = set(online_peers)
+
+    try:
+        # Salva peers atualizados em peers.json (formatação ordenada)
+        with open(PEERS_FILE, 'w') as f:
+            json.dump(sorted(list(known_nodes)), f, indent=2)
+        print(f"[P2P] peers.json atualizado. Peers online: {len(known_nodes)}")
+    except Exception as e:
+        print(f"[P2P] Falha ao salvar peers.json: {e}")
+
 
 def get_my_ip():
     """Tenta obter o IP local do nó e avisa se for privado."""
