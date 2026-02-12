@@ -171,7 +171,7 @@ mining_result = multiprocessing.Value('i', -1)
 
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 7200 # Blocos para recalcular dificuldade
+    ADJUST_INTERVAL = 10# Blocos para recalcular dificuldade
     TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
 
     def __init__(self, conn, node_id):
