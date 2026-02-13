@@ -40,9 +40,12 @@ miner_lock = threading.Lock()
 tx_lock = threading.Lock() # <--- ADICIONE ISTO
 
 # --- NÓS SEMENTES (Mantenha a variável mesmo que use o GitHub) ---
-SEED_NODES = [] 
+SEED_NODES = [
+    "https://seend.kert-one.com",
+    "https://seend2.kert-one.com",
+    "https://seend3.kert-one.com"
+]
 GITHUB_NODES_URL = "https://raw.githubusercontent.com/douglaskert/kert-one/main/nodes.json"
-
 def fetch_github_nodes():
     global known_nodes
     try:
@@ -778,88 +781,83 @@ class Blockchain:
         return total_difficulty
 
     def resolve_conflicts(self):
+        """
+        Algoritmo de Consenso: A cadeia com maior dificuldade acumulada vence.
+        """
         neighbors = list(known_nodes)
         new_chain = None
-
+        
+        # Pega a minha dificuldade total atual
         my_total_difficulty = self.get_total_difficulty(self.chain)
+        max_difficulty = my_total_difficulty
 
-        print(f"[CONSENSO] Verificando {len(neighbors)} vizinhos...")
         print(f"[CONSENSO] Minha dificuldade acumulada: {my_total_difficulty}")
 
         for node_url in neighbors:
-            if node_url == meu_url:
-                continue
-
+            if node_url == meu_url: continue
             try:
-                response = requests.get(f"{node_url}/chain", timeout=20)
+                # Busca a cadeia completa do vizinho
+                response = requests.get(f"{node_url}/chain", timeout=30)
+                if response.status_code == 200:
+                    data = response.json()
+                    peer_chain = data.get("chain")
+                    
+                    if not peer_chain: continue
 
-                if response.status_code != 200:
-                    continue
-
-                data = response.json()
-                peer_chain = data.get("chain")
-
-                if not peer_chain:
-                    continue
-    
-                if not self.valid_chain(peer_chain):
-                    print(f"[CONSENSO] Cadeia inválida de {node_url}")
-                    continue
-
-                peer_total_difficulty = self.get_total_difficulty(peer_chain)
-
-                print(f"[CONSENSO] {node_url} dificuldade acumulada: {peer_total_difficulty}")
-
-                # 🔥 REGRA REAL DE CONSENSO (Bitcoin-like)
-                if peer_total_difficulty > my_total_difficulty:
-                    print(f"[CONSENSO] Nova cadeia mais forte encontrada em {node_url}")
-                    new_chain = peer_chain
-                    my_total_difficulty = peer_total_difficulty
+                    # Calcula o peso da cadeia do vizinho
+                    peer_difficulty = self.get_total_difficulty(peer_chain)
+                    
+                    # REGRA: Se a dificuldade do vizinho for maior E a cadeia for válida, ele vence
+                    if peer_difficulty > max_difficulty:
+                        if self.valid_chain(peer_chain):
+                            max_difficulty = peer_difficulty
+                            new_chain = peer_chain
+                            print(f"[CONSENSO] Encontrada cadeia superior em {node_url} (Diff: {peer_difficulty})")
 
             except Exception as e:
-                continue
+                # print(f"[CONSENSO] Falha ao contatar {node_url}")
+                pass
 
         if new_chain:
-            print("[CONSENSO] 🔄 Atualizando cadeia local...")
             self.chain = new_chain
-            self._rebuild_db_from_chain()
-            print(f"[CONSENSO] ✅ Sincronizado no bloco {len(self.chain)}")
+            # 🛑 CRÍTICO: Rebuild limpa o DB local e grava a nova verdade
+            self._rebuild_db_from_chain() 
+            print(f"[CONSENSO] ✅ Sincronizado com a cadeia mais longa! Blocos: {len(self.chain)}")
             return True
 
-        print("[CONSENSO] 🔒 Nenhuma cadeia superior encontrada.")
+        print("[CONSENSO] 🔒 Você já possui a cadeia mais forte da rede.")
         return False
 
     def _rebuild_db_from_chain(self):
-        print("[REBUILD] Reconstruindo dados locais...")
+        print("[REBUILD] 🔨 Limpando e reconstruindo banco de dados...")
         try:
             c = self.conn.cursor()
+            # Limpa as tabelas para evitar conflitos de índices
             c.execute("DELETE FROM txs")
             c.execute("DELETE FROM blocks")
 
             for block in self.chain:
+                # Salva os blocos da nova cadeia
                 c.execute("""
-                    INSERT INTO blocks
-                    (index_, previous_hash, proof, timestamp, miner, difficulty, protocol_value)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO blocks (index_, previous_hash, proof, timestamp, miner, difficulty, protocol_value)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
                     block['index'], block['previous_hash'], block['proof'],
                     block['timestamp'], block['miner'], block.get('difficulty', 1),
                     block.get('protocol_value', 0.0)
                 ))
 
+                # Salva as transações originais daqueles blocos
                 for tx in block['transactions']:
-                    # MUDANÇA AQUI: Adicionado "OR IGNORE" para evitar o erro de ID duplicado
                     c.execute("""
-                        INSERT OR IGNORE INTO txs
-                        (id, sender, recipient, amount, fee, signature, block_index, public_key)
+                        INSERT OR IGNORE INTO txs (id, sender, recipient, amount, fee, signature, block_index, public_key)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         tx['id'], tx['sender'], tx['recipient'], tx['amount'],
                         tx['fee'], tx['signature'], block['index'], tx.get('public_key', '')
                     ))
-
+            
             self.conn.commit()
-            print("[REBUILD] OK")
         except Exception as e:
             print(f"[REBUILD ERRO] {e}")
 
@@ -1614,33 +1612,42 @@ def broadcast_block(block):
 
 def discover_peers():
     global known_nodes, meu_url
-    # print("[DISCOVERY] Varrendo peers...") # Comentado para poluir menos o log
+    
+    # 1. Garante que os Seeds oficiais (SEEND) estão sempre na lista de busca
+    for seed in SEED_NODES:
+        if seed and seed != meu_url:
+            known_nodes.add(seed.strip().rstrip('/'))
 
-    # Carrega seeds se necessário
-    if len(known_nodes) < 1:
-        load_peers()
-        fetch_github_nodes()
+    # 2. Busca a lista atualizada de nós no repositório oficial do GitHub
+    fetch_github_nodes()
 
+    # 3. Varre os vizinhos conhecidos para descobrir novos participantes (Gossip Protocol)
     peers_snapshot = list(known_nodes)
-    peers_to_remove = set() # Lista para remover nós mortos
-
     for peer in peers_snapshot:
-        if peer == meu_url:
+        if not peer or peer == meu_url: 
             continue
+            
         try:
-            # TIMEOUT REDUZIDO PARA 2 SEGUNDOS
-            # Se o peer não responder rápido, ignoramos para não travar a mineração
-            r = requests.get(f"{peer}/nodes", timeout=2)
+            # Tenta baixar a lista de quem esse vizinho conhece
+            # Usamos /nodes/share porque é o padrão para troca de listas P2P
+            r = requests.get(f"{peer}/nodes/share", timeout=3)
             
             if r.status_code == 200:
-                remote_nodes = r.json().get("nodes", [])
-                for n in remote_nodes:
-                    if n != meu_url and n not in known_nodes:
-                        known_nodes.add(n)
-        except:
-            # Se der erro, apenas ignora, não remove imediatamente para não perder seeds temporariamente offline
+                remote_nodes = r.json()
+                
+                # Se o vizinho retornou uma lista válida
+                if isinstance(remote_nodes, list):
+                    for n in remote_nodes:
+                        if n:
+                            n = n.strip().rstrip('/')
+                            # Adiciona se não for eu mesmo e se não for um endereço vazio
+                            if n and n != meu_url and n.startswith("http"):
+                                known_nodes.add(n)
+        except Exception:
+            # Se o vizinho estiver offline, apenas ignora e tenta o próximo
             pass
 
+    # 4. Salva a lista limpa e atualizada no peers.json
     save_peers()
 
 def get_my_ip():
@@ -1733,7 +1740,7 @@ def broadcast_new_block(block):
         except: 
             print(f"Node {node} offline, não recebeu o bloco.")
             
-# --- Execução Principal ---
+# --- Execução Principal Corrigida com Túnel e Sincronização de Resgate ---
 def run_server():
     global blockchain, meu_ip, meu_url, port
 
@@ -1743,54 +1750,54 @@ def run_server():
     node_id_val = load_or_create_node_id()
     blockchain = Blockchain(conn, node_id_val)
 
-    # 🔹 IP interno (somente para o Flask escutar)
-    meu_ip = get_my_ip()
-
-    # 🔹 URL pública real (evita nó isolado)
-    public_url = os.environ.get("PUBLIC_URL")
- 
-    if public_url:
+    # 1. Configuração de Rede Externa (Ngrok)
+    try:
+        from pyngrok import ngrok, conf
+        # Garante que o token esteja configurado (Substitua se necessário)
+        # conf.get_default().auth_token = "SEU_TOKEN_AQUI"
+        
+        print("[BOOT] 🚇 Abrindo túnel para acesso externo...")
+        public_url = ngrok.connect(port).public_url
         meu_url = public_url.rstrip('/')
-        print(f"[INFO] 🌍 URL pública do nó: {meu_url}") 
-    else:
+        print(f"[INFO] 🌍 Endereço Público: {meu_url}")
+    except Exception as e:
+        meu_ip = get_my_ip()
         meu_url = f"http://{meu_ip}:{port}"
-        print(f"[WARN] ⚠ PUBLIC_URL não definida — nó pode ficar isolado.")
-        print(f"[INFO] URL local: {meu_url}")
+        print(f"[WARN] ⚠ Falha no Ngrok ou PUBLIC_URL não definida. Usando: {meu_url}")
 
-    # 🔹 Garante que o próprio nó não está na lista de peers
+    # 2. Preparação de Vizinhos
     known_nodes.discard(meu_url)
+    # Adiciona os SEED_NODES obrigatoriamente
+    for seed in SEED_NODES:
+        if seed != meu_url:
+            known_nodes.add(seed)
 
-    # 🔹 Inicia descoberta de peers
+    # 3. Inicia descoberta de peers em segundo plano
     threading.Thread(target=discover_peers, daemon=True).start()
 
-    # 🔹 Espera real por peers antes de sincronizar (anti-fork)
-    print("[BOOT] Aguardando peers iniciais...") 
-    for _ in range(12):  # até ~24s
-        if known_nodes:
-            break
-        time.sleep(2)
+    # 4. 🚀 SINCRONIZAÇÃO DE RESGATE (Puxa a maior cadeia antes de tudo)
+    print("[BOOT] 📡 Sincronizando com a rede oficial (Seend)...")
+    for seed in SEED_NODES:
+        try:
+            print(f"   -> Verificando {seed}...")
+            r = requests.get(f"{seed}/chain", timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                # Se o servidor oficial tiver mais blocos que eu, eu me rendo à cadeia dele
+                if data['length'] > len(blockchain.chain):
+                    print(f"   ✅ Seed maior encontrada ({data['length']} blocos). Iniciando resgate...")
+                    blockchain.resolve_conflicts()
+                    break # Sincronizou com o principal, pode seguir
+        except:
+            continue
 
-    if known_nodes:
-        print(f"[BOOT] {len(known_nodes)} peers encontrados. Sincronizando cadeia...")
-        blockchain.resolve_conflicts()
-    else:
-        print("[BOOT] Nenhum peer ainda. Operando temporariamente isolado.")
-
-    # 🔹 Segunda tentativa de sync após a rede estabilizar
-    def delayed_second_sync():
-        time.sleep(30)
-        if known_nodes:
-            print("[BOOT] Segunda verificação de consenso após estabilização da rede...")
-            blockchain.resolve_conflicts()
-
-    threading.Thread(target=delayed_second_sync, daemon=True).start()
-
-    # 🔹 Inicia verificador automático de sincronização contínua
+    # 5. Processos de Manutenção e Sincronismo Contínuo
     threading.Thread(target=auto_sync_checker, args=(blockchain,), daemon=True).start()
 
-    print(f"[INFO] 🚀 Nó rodando na porta {port}")
+    print(f"[INFO] 🚀 Nó Kert-One Ativo na porta {port}")
+    # O host '0.0.0.0' permite que o Ngrok redirecione para cá
     app.run(host='0.0.0.0', port=port, threaded=True)
 
- 
 if __name__ == "__main__":
+    # Garante que as tabelas existem antes de ligar o motor
     run_server()
