@@ -2384,7 +2384,7 @@ if __name__ == "__main__":
     # Tenta usar Ngrok para aparecer para o mundo (Opcional, mas bom)
     try:
         from pyngrok import ngrok, conf
-        # conf.get_default().auth_token = "SEU_TOKEN_AQUI" 
+        conf.get_default().auth_token = "SEU_TOKEN_AQUI" 
         public_url = ngrok.connect(port).public_url
         meu_url = public_url
         print(f"[REDE] 🌍 Seu nó está público em: {meu_url}")
@@ -2450,3 +2450,4 @@ if __name__ == "__main__":
     
     window.show()
     sys.exit(qt_app.exec_())
+
