@@ -176,56 +176,49 @@ class Blockchain:
     ADJUST_INTERVAL = 10# Blocos para recalcular dificuldade
     TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
 
+    def _calculate_difficulty_for_index(self, target_block_index):
+
+        # Só ajusta em múltiplos de 2016
+        if target_block_index % self.ADJUST_INTERVAL != 0:
+            return self.chain[-1].get('difficulty', DIFFICULTY)
+
+        if len(self.chain) < self.ADJUST_INTERVAL:
+            return DIFFICULTY
+    
+        last_block = self.chain[-1]
+        first_block = self.chain[-self.ADJUST_INTERVAL]
+
+        actual_time = last_block['timestamp'] - first_block['timestamp']
+        expected_time = self.ADJUST_INTERVAL * self.TARGET_TIME
+
+        # Limite estilo Bitcoin (¼x a 4x)
+        actual_time = max(expected_time // 4, min(actual_time, expected_time * 4))
+
+        old_diff = last_block['difficulty']
+        new_diff = int(old_diff * (expected_time / actual_time))
+
+        print(f"[DIFF BITCOIN] antiga={old_diff} nova={new_diff}")
+
+        return max(1, new_diff)
+        
     def __init__(self, conn, node_id):
         self.conn = conn
         self.node_id = node_id
         self._init_db()
         self.chain = self._load_chain()
         self.current_transactions = []
-        
-        # INJEÇÃO: Inicialização da GPU
-        self.ctx = None
-        self.queue = None
-        self.use_gpu = False # Default para false, será atualizado pela API
-        
-        if HAS_GPU:
-            try:
-                platforms = cl.get_platforms()
-                target_device = None
-                
-                # Procura especificamente por uma GPU em todas as plataformas disponíveis
-                for platform in platforms:
-                    try:
-                        devices = platform.get_devices(device_type=cl.device_type.GPU)
-                        if devices:
-                            target_device = devices[0]
-                            print(f"[BOOT] 🟢 GPU Encontrada: {target_device.name} na plataforma {platform.name}")
-                            # Cria o contexto USANDO O DISPOSITIVO ESPECÍFICO (Corrige o INVALID_PLATFORM)
-                            self.ctx = cl.Context(devices=[target_device])
-                            self.queue = cl.CommandQueue(self.ctx)
-                            self.use_gpu = True
-                            break # Para na primeira GPU que encontrar
-                    except Exception as e:
-                        continue # Tenta a próxima plataforma se essa falhar
-
-                if not self.use_gpu:
-                    print("[BOOT] ⚠️ Nenhuma GPU utilizável encontrada nas plataformas OpenCL.")
-
-            except Exception as e:
-                print(f"[BOOT] Erro Fatal GPU: {e}")
-                self.use_gpu = False
 
         if not self.chain:
-            print("[BOOT] 📡 Sincronizando Gênese oficial (Base 500.0)...")
+            print("[BOOT] 📡 Inserindo Gênese Base 500.0...")
             genesis_block = {
                 'index': 1,
                 'previous_hash': '1',
                 'proof': 100,
-                'timestamp': 1700000000.0, # Data fixa igual ao servidor
+                'timestamp': 1700000000.0,
                 'miner': 'genesis',
                 'transactions': [],
                 'difficulty': 1,
-                'protocol_value': 500.0 
+                'protocol_value': 500.0 # <--- ERA 0, AGORA É 500 (IGUAL AO SERVER)
             }
             self.chain.append(genesis_block)
             self._save_block(genesis_block)
@@ -2384,7 +2377,7 @@ if __name__ == "__main__":
     # Tenta usar Ngrok para aparecer para o mundo (Opcional, mas bom)
     try:
         from pyngrok import ngrok, conf
-        conf.get_default().auth_token = "SEU_TOKEN_AQUI" 
+        conf.get_default().auth_token = "2sybhg0bkxq1Gindy3ZFHT0Ko9T_4PrA9yFZWsG8gso4Unip8" 
         public_url = ngrok.connect(port).public_url
         meu_url = public_url
         print(f"[REDE] 🌍 Seu nó está público em: {meu_url}")
@@ -2450,4 +2443,3 @@ if __name__ == "__main__":
     
     window.show()
     sys.exit(qt_app.exec_())
-
