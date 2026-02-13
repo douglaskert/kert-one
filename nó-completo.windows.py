@@ -1,3 +1,4 @@
+
 import hashlib
 import json
 import time
@@ -2370,104 +2371,81 @@ def share_nodes():
     """Retorna a lista de nós conhecidos para outros peers."""
     return jsonify(list(known_nodes)), 200
     
-# --- Execução Principal OTIMIZADA (Foca apenas no Online) ---
+# --- Execução Principal OTIMIZADA ---
 if __name__ == "__main__":
-    # 1. Configuração Inicial
+    # 1. Configuração Inicial do Banco de Dados
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = load_or_create_node_id()
     blockchain = Blockchain(conn, node_id_val)
 
-    # 2. Definição de Rede com NGROK (Túnel Automático)
+    # 2. Definição de Porta e Rede
     port = int(os.environ.get('PORT', 5001))
     
-    # Tenta usar Ngrok para expor a porta sem mexer no roteador
+    # Tenta usar Ngrok para aparecer para o mundo (Opcional, mas bom)
     try:
         from pyngrok import ngrok, conf
-        
-        # Opcional: Se você tiver um token do ngrok, descomente a linha abaixo e coloque seu token
-        conf.get_default().auth_token = "2sybhg0bkxq1Gindy3ZFHT0Ko9T_4PrA9yFZWsG8gso4Unip8"
-
-        print("[BOOT] 🚇 Iniciando túnel Ngrok para acesso externo...")
-        # Abre o túnel HTTP na porta 5001
+        # conf.get_default().auth_token = "SEU_TOKEN_AQUI" 
         public_url = ngrok.connect(port).public_url
         meu_url = public_url
-        print(f"[BOOT] 🌍 SEU ENDEREÇO PÚBLICO: {meu_url}")
-        print("[BOOT] ✅ Agora os Seeds conseguem te enxergar!")
-        
-    except ImportError:
-        print("[BOOT] ⚠️ Biblioteca 'pyngrok' não instalada. Instale com: pip install pyngrok")
-        print("[BOOT] Usando IP Local (Seeds não conseguirão conectar de volta se as portas estiverem fechadas).")
+        print(f"[REDE] 🌍 Seu nó está público em: {meu_url}")
+    except:
         meu_ip = get_my_ip()
         meu_url = f"http://{meu_ip}:{port}"
-    except Exception as e:
-        print(f"[BOOT] ❌ Falha ao iniciar Ngrok: {e}")
-        meu_ip = get_my_ip()
-        meu_url = f"http://{meu_ip}:{port}"
+        print(f"[REDE] 🏠 Rodando localmente em: {meu_url}")
 
-    print(f"[BOOT] 🏠 Nó Interno rodando em: http://127.0.0.1:{port}")
-
-    # 3. 🧹 LIMPEZA DE REDE (A Correção Que Você Pediu) 🧹
-    # Testamos os Seeds antes de começar. Só fica quem estiver vivo.
-    print("[BOOT] 🚦 Testando conectividade com Seeds...")
-    seeds_ativos = []
-    
-    for seed in SEED_NODES:
-        if seed == meu_url: continue # Não conecta em si mesmo (se for um seed)
-        try:
-            print(f"   -> Testando {seed}...", end="")
-            # Timeout curto (2s) para não perder tempo com servidor morto
-            r = requests.get(f"{seed}/chain", timeout=2)
-            if r.status_code == 200:
-                print(" ✅ ONLINE")
-                seeds_ativos.append(seed)
-                known_nodes.add(seed)
-                
-                # 🔥 REGISTRO IMEDIATO: Avisa o Seed que existimos via Ngrok
-                try:
-                    print(f"      📡 Registrando {meu_url} no seed...")
-                    requests.post(f"{seed}/nodes/register", json={"url": meu_url}, timeout=3)
-                except:
-                    print("      ⚠️ Falha ao registrar no seed.")
-
-            else:
-                print(f" ❌ REJEITADO (Status {r.status_code}) - Ignorando.")
-        except:
-            print(" ⏳ OFFLINE - Mantido para tentativa posterior.")
-            # Não removemos o seed da lista, apenas marcamos como offline no log
-            # Isso permite que o discover_peers tente novamente mais tarde
-
-    # Carrega peers do arquivo (se existirem)
-    peers_salvos = carregar_peers()
-    for p in peers_salvos:
-        if p not in SEED_NODES: 
-            known_nodes.add(p)
-
-    salvar_peers(known_nodes)
-    
-    if not seeds_ativos and not peers_salvos:
-        print("[AVISO] ⚠️ Nenhum servidor externo respondendo. Você minerará isolado até alguém conectar.")
-    else:
-        print(f"[BOOT] 🎯 Focando em {len(known_nodes)} nós ativos.")
-
-    # 4. Iniciar Servidor
+    # 3. Iniciar o Servidor Flask (O "Cérebro") em Background
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
+    
+    # Dê um tempo para o servidor subir
     time.sleep(2) 
 
-    # 5. Sincronização Focada
-    if len(known_nodes) > 0:
-        print("[BOOT] 🔄 Sincronizando apenas com nós ativos...")
-        blockchain.resolve_conflicts()
+    # ==============================================================================
+    # 🚨 AQUI ESTÁ A MÁGICA PARA NÃO FICAR ISOLADO 🚨
+    # ==============================================================================
+    print("\n[BOOT] 📡 Conectando aos Seeds para baixar a Blockchain Real...")
     
-    # 6. Processos de Fundo
+    sincronizado = False
+    
+    # Adiciona os Seeds à lista de conhecidos
+    for seed in SEED_NODES:
+        known_nodes.add(seed)
+
+    # Tenta forçar a sincronização AGORA
+    if blockchain.resolve_conflicts():
+        print("[BOOT] ✅ SUCESSO! Banco de dados sincronizado com o Seend!")
+        sincronizado = True
+    else:
+        # Se falhou, verifica se já temos dados
+        if len(blockchain.chain) > 1:
+            print("[BOOT] ⚠️ Não baixou blocos novos, mas seu DB local já parece ter dados.")
+        else:
+            print("[BOOT] ❌ ALERTA: Seu nó pode estar isolado. Verifique sua internet.")
+            # Tenta mais uma vez forçado, loopando pelos seeds
+            for seed in SEED_NODES:
+                try:
+                    print(f"[BOOT] Tentando forçar conexão com {seed}...")
+                    r = requests.get(f"{seed}/chain", timeout=5)
+                    if r.status_code == 200:
+                        data = r.json()
+                        if len(data['chain']) > len(blockchain.chain):
+                            blockchain.chain = data['chain']
+                            blockchain._rebuild_db_from_chain()
+                            print(f"[BOOT] 📥 Blockchain baixada na marra de {seed}!")
+                            sincronizado = True
+                            break
+                except Exception as e:
+                    print(f"[BOOT] Falha ao conectar em {seed}: {e}")
+
+    # 4. Iniciar Processos de Fundo (Manter sincronizado)
     threading.Thread(target=auto_sync_checker, args=(blockchain,), daemon=True).start()
 
-    # 7. Interface
+    # 5. Abrir a Interface Gráfica (O "Controle Remoto")
     print("[GUI] 🚀 Iniciando Interface...")
     qt_app = QApplication(sys.argv)
     window = KertOneCoreClient()
     
-    # Importante: A GUI local continua usando localhost para comandar o minerador
+    # A GUI conecta no SEU PC (127.0.0.1), mas seu PC já está conectado no Seend!
     window._on_flask_url_ready(f"http://127.0.0.1:{port}")
     
     window.show()
