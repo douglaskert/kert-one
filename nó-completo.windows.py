@@ -54,7 +54,7 @@ WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do clien
 SEED_NODES = [
     "https://seend.kert-one.com",
     "https://seend2.kert-one.com",
-    "https://seend3.kert-one.com",
+    "http://seend3.kert-one.com:8001",
 ]
 
 # --- KERNEL REAL SHA256 PARA GPU (INJEÇÃO) ---
@@ -818,51 +818,48 @@ class Blockchain:
 
     def resolve_conflicts(self):
         """
-        Algoritmo de Consenso OTIMIZADO PARA SALDO.
-        Baixa a chain e reconstrói o índice de transações para garantir que o saldo apareça.
+        Algoritmo de Consenso: Verifica todos os vizinhos e adota a cadeia mais pesada.
         """
         neighbors = list(known_nodes)
         new_chain = None
-        current_len = len(self.chain)
         
-        print(f"[CONSENSO] 📡 Buscando dados em {len(neighbors)} nós...")
+        # Baseia-se na dificuldade acumulada (Trabalho total realizado)
+        my_total_difficulty = self.get_total_difficulty(self.chain)
+        max_difficulty = my_total_difficulty
+
+        print(f"[CONSENSO] A verificar {len(neighbors)} vizinhos...")
 
         for node_url in neighbors:
             if node_url == meu_url: continue
             try:
-                # Timeout de 60s para garantir o download completo
-                response = requests.get(f"{node_url}/chain", timeout=60)
+                # Tenta obter a cadeia do vizinho
+                response = requests.get(f"{node_url}/chain", timeout=15)
                 if response.status_code == 200:
                     data = response.json()
                     peer_chain = data.get("chain")
+                    
                     if not peer_chain: continue
 
-                    peer_len = len(peer_chain)
-                    print(f"[CONSENSO] Peer {node_url}: {peer_len} blocos.")
-
-                    # 🚨 REGRA DE OURO: Se o peer tem mais blocos e a cadeia é válida, EU COPIO.
-                    if peer_len > current_len and self.valid_chain(peer_chain):
-                        print(f"[CONSENSO] 📥 Baixando {peer_len - current_len} novos blocos de {node_url}...")
-                        new_chain = peer_chain
-                        current_len = peer_len # Atualiza para não baixar de outro menor
-                        
-                    # Modo Resgate para Gênese (Se eu sou novo)
-                    elif current_len <= 1 and peer_len > 1:
-                         print(f"[CONSENSO] 🚨 RESGATE: Aceitando cadeia mestre de {node_url}")
-                         new_chain = peer_chain
-                         break 
+                    peer_difficulty = self.get_total_difficulty(peer_chain)
+                    
+                    # Se o vizinho tem mais dificuldade acumulada, ele tem a "verdade"
+                    if peer_difficulty > max_difficulty:
+                        if self.valid_chain(peer_chain):
+                            max_difficulty = peer_difficulty
+                            new_chain = peer_chain
+                            print(f"[CONSENSO] Cadeia superior encontrada em: {node_url}")
 
             except Exception:
+                # Apenas ignora se o nó falhar, permitindo continuar para o próximo
                 pass
 
         if new_chain:
             self.chain = new_chain
-            # 🛑 PONTO CRÍTICO: Reconstruir o DB para o saldo aparecer!
+            # Limpa o banco de dados e grava a nova cadeia oficial
             self._rebuild_db_from_chain() 
-            print(f"[CONSENSO] ✅ Sincronizado! Você está no bloco {len(self.chain)}.")
+            print(f"[CONSENSO] ✅ Sincronizado com sucesso! Total de blocos: {len(self.chain)}")
             return True
 
-        print("[CONSENSO] 🔒 Nada novo na rede.")
         return False
 
     def _rebuild_db_from_chain(self):
@@ -2435,7 +2432,9 @@ if __name__ == "__main__":
             else:
                 print(f" ❌ REJEITADO (Status {r.status_code}) - Ignorando.")
         except:
-            print(" 💀 OFFLINE - Removendo da lista.")
+            print(" ⏳ OFFLINE - Mantido para tentativa posterior.")
+            # Não removemos o seed da lista, apenas marcamos como offline no log
+            # Isso permite que o discover_peers tente novamente mais tarde
 
     # Carrega peers do arquivo (se existirem)
     peers_salvos = carregar_peers()
