@@ -1515,15 +1515,7 @@ def broadcast_block(block):
         print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
 
 
-
 def discover_peers():
-    """
-    Descobre peers e mantém apenas peers ONLINE no peers.json.
-    - Verifica /chain para checar se o peer está vivo.
-    - Puxa /nodes/share para aprender novos peers.
-    - Remove peers que não respondem.
-    - Não remove meu_url.
-    """
     global known_nodes, meu_url
 
     peers_snapshot = list(known_nodes)
@@ -1531,55 +1523,34 @@ def discover_peers():
 
     for peer in peers_snapshot:
         if not peer or peer == meu_url:
-            # mantém meu_url protegido (não remove)
-            if peer == meu_url:
-                online_peers.add(peer)
+            if peer == meu_url: online_peers.add(peer)
             continue
 
         try:
-            # Verifica se peer está online usando /chain (mais "pesado" mas confiável)
+            # Tenta verificar se o peer está vivo
             r = requests.get(f"{peer.rstrip('/')}/chain", timeout=3)
 
             if r.status_code == 200:
                 online_peers.add(peer.rstrip('/'))
 
-                # Puxa peers desse peer via /nodes/share (se existir)
+                # 🔥 Tenta puxar novos amigos deste peer
                 try:
                     r2 = requests.get(f"{peer.rstrip('/')}/nodes/share", timeout=3)
                     if r2.status_code == 200:
                         remote_nodes = r2.json()
+                        # Se vier uma lista direto: [url1, url2]
                         if isinstance(remote_nodes, list):
                             for n in remote_nodes:
-                                if not n:
-                                    continue
-                                n = n.strip().rstrip('/')
-                                if n and n != meu_url:
-                                    online_peers.add(n)
-                except Exception:
-                    # falha ao puxar nodes/share não tira o peer online
+                                if n and n.strip().rstrip('/') != meu_url:
+                                    online_peers.add(n.strip().rstrip('/'))
+                except:
                     pass
-            else:
-                # resposta não-200 -> considera offline (não adiciona)
-                print(f"[P2P] Peer respondeu com status {r.status_code}, removendo temporariamente: {peer}")
-        except Exception:
-            # timeout ou erro de conexão -> peer off
-            print(f"[P2P] Peer offline removido temporariamente: {peer}")
+        except:
+            print(f"[P2P] Peer offline ignorado: {peer}")
 
-    # Evita remover meu_url mesmo que não esteja na lista de peers
-    if meu_url:
-        online_peers.add(meu_url)
-
-    # Atualiza known_nodes com apenas os online peers
+    if meu_url: online_peers.add(meu_url)
     known_nodes = set(online_peers)
-
-    try:
-        # Salva peers atualizados em peers.json (formatação ordenada)
-        with open(PEERS_FILE, 'w') as f:
-            json.dump(sorted(list(known_nodes)), f, indent=2)
-        print(f"[P2P] peers.json atualizado. Peers online: {len(known_nodes)}")
-    except Exception as e:
-        print(f"[P2P] Falha ao salvar peers.json: {e}")
-
+    salvar_peers(known_nodes)
 
 def get_my_ip():
     """Tenta obter o IP local do nó e avisa se for privado."""
@@ -2397,8 +2368,11 @@ def run_server():
     # O servidor sempre roda na porta 5001 para o minerador local
     app.run(host='0.0.0.0', port=5001, threaded=True)
 
-# ... (início do código permanece igual)
-
+@app.route('/nodes/share', methods=['GET'])
+def share_nodes():
+    """Retorna a lista de nós conhecidos para outros peers."""
+    return jsonify(list(known_nodes)), 200
+    
 # --- Execução Principal OTIMIZADA (Foca apenas no Online) ---
 if __name__ == "__main__":
     # 1. Configuração Inicial
