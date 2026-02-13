@@ -1623,7 +1623,7 @@ class KertOneCoreClient(QMainWindow):
         self.mining_timer.timeout.connect(self.mine_block_via_api)
 
         # 🟢 DINÂMICO: A GUI agora segue a URL global definida no boot
-        self._on_flask_url_ready("https://seend.kert-one.com")
+        self._on_flask_url_ready("http://127.0.0.1:5001")
 
 
     def update_log_viewer(self, message, message_type="info"):
