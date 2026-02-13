@@ -43,7 +43,7 @@ tx_lock = threading.Lock() # <--- ADICIONE ISTO
 SEED_NODES = [
     "https://seend.kert-one.com",
     "https://seend2.kert-one.com",
-    "https://seend3.kert-one.com"
+    "http://seend3.kert-one.com:8001"
 ]
 GITHUB_NODES_URL = "https://raw.githubusercontent.com/douglaskert/kert-one/main/nodes.json"
 def fetch_github_nodes():
