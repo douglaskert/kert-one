@@ -169,6 +169,7 @@ is_mining = False
 mining_stop_flag = multiprocessing.Event()
 mining_result = multiprocessing.Value('i', -1)
 
+
 # --- Classe Blockchain ---
 class Blockchain:
     ADJUST_INTERVAL = 10# Blocos para recalcular dificuldade
@@ -189,13 +190,29 @@ class Blockchain:
         if HAS_GPU:
             try:
                 platforms = cl.get_platforms()
-                if platforms:
-                    self.ctx = cl.Context(dev_type=cl.device_type.GPU)
-                    self.queue = cl.CommandQueue(self.ctx)
-                    self.use_gpu = True # Ativa por padrão se tiver GPU
-                    print("[BOOT] 🟢 GPU Detectada e Inicializada para Mineração Real.")
+                target_device = None
+                
+                # Procura especificamente por uma GPU em todas as plataformas disponíveis
+                for platform in platforms:
+                    try:
+                        devices = platform.get_devices(device_type=cl.device_type.GPU)
+                        if devices:
+                            target_device = devices[0]
+                            print(f"[BOOT] 🟢 GPU Encontrada: {target_device.name} na plataforma {platform.name}")
+                            # Cria o contexto USANDO O DISPOSITIVO ESPECÍFICO (Corrige o INVALID_PLATFORM)
+                            self.ctx = cl.Context(devices=[target_device])
+                            self.queue = cl.CommandQueue(self.ctx)
+                            self.use_gpu = True
+                            break # Para na primeira GPU que encontrar
+                    except Exception as e:
+                        continue # Tenta a próxima plataforma se essa falhar
+
+                if not self.use_gpu:
+                    print("[BOOT] ⚠️ Nenhuma GPU utilizável encontrada nas plataformas OpenCL.")
+
             except Exception as e:
-                print(f"[BOOT] Erro GPU: {e}")
+                print(f"[BOOT] Erro Fatal GPU: {e}")
+                self.use_gpu = False
 
         if not self.chain:
             print("[BOOT] 📡 Sincronizando Gênese oficial (Base 500.0)...")
@@ -429,9 +446,10 @@ class Blockchain:
 
         # 🚀 GPU roda em processo separado
         if self.use_gpu and HAS_GPU:
+            # Passamos as variáveis globais mining_stop_flag e mining_result como argumentos
             gpu_process = multiprocessing.Process(
-                target=self._mine_gpu,
-                args=(last_proof, difficulty)
+                target=Blockchain._mine_gpu, # <--- Corrigido para chamar pela Classe
+                args=(last_proof, difficulty, mining_stop_flag, mining_result)
             )
             processes.append(gpu_process)
             gpu_process.start()
@@ -524,6 +542,97 @@ class Blockchain:
 
         return -1
     
+    @staticmethod
+    def _mine_gpu(last_proof, difficulty, stop_event, result_value):
+        # Importação local para garantir que o processo filho tenha as libs
+        import pyopencl as cl
+        import numpy as np
+
+        print("[GPU] Inicializando contexto OpenCL no processo filho...")
+
+        try:
+            # 1. REDETECTAR A GPU (Necessário no Windows)
+            platforms = cl.get_platforms()
+            target_device = None
+            
+            for platform in platforms:
+                try:
+                    devices = platform.get_devices(device_type=cl.device_type.GPU)
+                    if devices:
+                        target_device = devices[0]
+                        break 
+                except Exception:
+                    continue
+            
+            if target_device is None:
+                raise Exception("Nenhuma GPU encontrada no subprocesso.")
+
+            # 2. CRIAR CONTEXTO E FILA
+            ctx = cl.Context(devices=[target_device])
+            queue = cl.CommandQueue(ctx)
+            
+            # 3. COMPILAR O PROGRAMA
+            prg = cl.Program(ctx, OPENCL_KERNEL).build()
+            
+            # --- CORREÇÃO DO AVISO "RepeatedKernelRetrieval" ---
+            # Instanciamos o kernel UMA VEZ fora do loop
+            kernel = cl.Kernel(prg, "search_block")
+            # ---------------------------------------------------
+
+            # Buffers
+            result_nonce = np.zeros(1, dtype=np.uint32)
+            found = np.zeros(1, dtype=np.int32)
+            mf = cl.mem_flags
+
+            res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
+            found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
+
+            batch_size = 8000000 # Tamanho do lote para GTX 1060
+            current_nonce = 0
+
+            # Loop de Mineração
+            while not stop_event.is_set():
+
+                # Executa o kernel usando o objeto já criado
+                kernel(
+                    queue,
+                    (batch_size,),
+                    None,
+                    res_buf,
+                    found_buf,
+                    np.uint32(difficulty),
+                    np.uint32(current_nonce)
+                )
+
+                cl.enqueue_copy(queue, found, found_buf)
+                queue.finish()
+    
+                if found[0] == 1:
+                    cl.enqueue_copy(queue, result_nonce, res_buf)
+                    nonce = int(result_nonce[0])
+
+                    # Validação final no Python
+                    if Blockchain.valid_proof(last_proof, nonce, difficulty):
+                        print(f"[GPU] 🚀 PROVA ENCONTRADA: {nonce}")
+                        result_value.value = nonce
+                        stop_event.set()
+                        return nonce
+
+                    # Falso positivo (colisão rara), reseta e continua
+                    found[0] = 0
+                    cl.enqueue_copy(queue, found_buf, found)
+
+                current_nonce += batch_size
+                
+                # Pequena pausa para evitar travamento total do PC
+                time.sleep(0.002)
+
+        except Exception as e:
+            print(f"[GPU ERROR] {e}. (A CPU assumirá se configurada)")
+            return -1
+
+        return -1
+        
     @staticmethod
     def _cpu_worker(last_proof, difficulty, start, step, stop_event, result_value):
         """
@@ -2288,6 +2397,8 @@ def run_server():
     # O servidor sempre roda na porta 5001 para o minerador local
     app.run(host='0.0.0.0', port=5001, threaded=True)
 
+# ... (início do código permanece igual)
+
 # --- Execução Principal OTIMIZADA (Foca apenas no Online) ---
 if __name__ == "__main__":
     # 1. Configuração Inicial
@@ -2295,11 +2406,34 @@ if __name__ == "__main__":
     node_id_val = load_or_create_node_id()
     blockchain = Blockchain(conn, node_id_val)
 
-    # 2. Definição de Rede
+    # 2. Definição de Rede com NGROK (Túnel Automático)
     port = int(os.environ.get('PORT', 5001))
-    meu_ip = get_my_ip()
-    meu_url = f"http://{meu_ip}:{port}"
-    print(f"[BOOT] 🏠 Nó Local: {meu_url}")
+    
+    # Tenta usar Ngrok para expor a porta sem mexer no roteador
+    try:
+        from pyngrok import ngrok, conf
+        
+        # Opcional: Se você tiver um token do ngrok, descomente a linha abaixo e coloque seu token
+        conf.get_default().auth_token = "2sybhg0bkxq1Gindy3ZFHT0Ko9T_4PrA9yFZWsG8gso4Unip8"
+
+        print("[BOOT] 🚇 Iniciando túnel Ngrok para acesso externo...")
+        # Abre o túnel HTTP na porta 5001
+        public_url = ngrok.connect(port).public_url
+        meu_url = public_url
+        print(f"[BOOT] 🌍 SEU ENDEREÇO PÚBLICO: {meu_url}")
+        print("[BOOT] ✅ Agora os Seeds conseguem te enxergar!")
+        
+    except ImportError:
+        print("[BOOT] ⚠️ Biblioteca 'pyngrok' não instalada. Instale com: pip install pyngrok")
+        print("[BOOT] Usando IP Local (Seeds não conseguirão conectar de volta se as portas estiverem fechadas).")
+        meu_ip = get_my_ip()
+        meu_url = f"http://{meu_ip}:{port}"
+    except Exception as e:
+        print(f"[BOOT] ❌ Falha ao iniciar Ngrok: {e}")
+        meu_ip = get_my_ip()
+        meu_url = f"http://{meu_ip}:{port}"
+
+    print(f"[BOOT] 🏠 Nó Interno rodando em: http://127.0.0.1:{port}")
 
     # 3. 🧹 LIMPEZA DE REDE (A Correção Que Você Pediu) 🧹
     # Testamos os Seeds antes de começar. Só fica quem estiver vivo.
@@ -2307,7 +2441,7 @@ if __name__ == "__main__":
     seeds_ativos = []
     
     for seed in SEED_NODES:
-        if seed == meu_url: continue
+        if seed == meu_url: continue # Não conecta em si mesmo (se for um seed)
         try:
             print(f"   -> Testando {seed}...", end="")
             # Timeout curto (2s) para não perder tempo com servidor morto
@@ -2316,6 +2450,14 @@ if __name__ == "__main__":
                 print(" ✅ ONLINE")
                 seeds_ativos.append(seed)
                 known_nodes.add(seed)
+                
+                # 🔥 REGISTRO IMEDIATO: Avisa o Seed que existimos via Ngrok
+                try:
+                    print(f"      📡 Registrando {meu_url} no seed...")
+                    requests.post(f"{seed}/nodes/register", json={"url": meu_url}, timeout=3)
+                except:
+                    print("      ⚠️ Falha ao registrar no seed.")
+
             else:
                 print(f" ❌ REJEITADO (Status {r.status_code}) - Ignorando.")
         except:
@@ -2324,7 +2466,7 @@ if __name__ == "__main__":
     # Carrega peers do arquivo (se existirem)
     peers_salvos = carregar_peers()
     for p in peers_salvos:
-        if p not in SEED_NODES: # Só adiciona se não for um seed já testado
+        if p not in SEED_NODES: 
             known_nodes.add(p)
 
     salvar_peers(known_nodes)
@@ -2351,5 +2493,9 @@ if __name__ == "__main__":
     print("[GUI] 🚀 Iniciando Interface...")
     qt_app = QApplication(sys.argv)
     window = KertOneCoreClient()
+    
+    # Importante: A GUI local continua usando localhost para comandar o minerador
+    window._on_flask_url_ready(f"http://127.0.0.1:{port}")
+    
     window.show()
     sys.exit(qt_app.exec_())
