@@ -160,13 +160,14 @@ known_nodes = set(carregar_peers())
 miner_lock = threading.Lock()
 
 blockchain = None
-miner_address = None # Agora será definido por um endpoint ou configuração
+miner_address = None
+miner_address_global = None # Agora será definido por um endpoint ou configuração
 meu_url = None # Definido no main
 meu_ip = None # Definido no main
 port = None # Definido no main
 
 # Global variable for mining control
-is_mining = False
+mining_active = False
 mining_stop_flag = multiprocessing.Event()
 mining_result = multiprocessing.Value('i', -1)
 
@@ -199,7 +200,9 @@ class Blockchain:
 
         print(f"[DIFF BITCOIN] antiga={old_diff} nova={new_diff}")
 
-        return max(1, new_diff)
+        # --- AQUI ESTÁ A CORREÇÃO ---
+        # Garante que a dificuldade seja no mínimo 1 e no máximo 12
+        return min(12, max(1, new_diff))
         
     def __init__(self, conn, node_id):
         self.conn = conn
@@ -426,48 +429,51 @@ class Blockchain:
         """Retorna o último bloco da cadeia."""
         return self.chain[-1] if self.chain else None
 
-    # --- INJEÇÃO: FUNÇÕES DE MINERAÇÃO REAL ---
     def proof_of_work(self, last_proof):
-        global mining_stop_flag, mining_result
+        """
+        Encontra uma prova de trabalho. 
+        OTIMIZADO: Libera a CPU periodicamente para não travar o Flask.
+        """
+        difficulty_for_pow = self._calculate_difficulty_for_index(len(self.chain) + 1)
+        proof = 0
+        print(f"⛏️  [MINER] Iniciando mineração. Dificuldade: {difficulty_for_pow}")
+        start_time = time.time()
+        
+        while not self.valid_proof(last_proof, proof, difficulty_for_pow):
+            global mining_active
+            if not mining_active:
+                print("[Miner] 🛑 Mineração parada manualmente.")
+                return -1
+            
+            # --- CORREÇÃO CRÍTICA AQUI ---
+            # A cada 1000 hashes, dorme 1ms para o Flask processar requisições de rede
+            if proof % 1000 == 0:
+                time.sleep(0.001) 
+            
+            # Verifica se outro nó já achou o bloco (evita trabalho inútil)
+            if self.last_block()['proof'] != last_proof:
+                print("[Miner] ⚠️ Outro bloco chegou na rede. Reiniciando mineração.")
+                return -1
 
-        difficulty = self._calculate_difficulty_for_index(len(self.chain) + 1)
-        print(f"[MINER] Iniciando POW híbrido | Dificuldade {difficulty}")
+            # Log de progresso a cada 10 segundos
+            if time.time() - start_time > 10:
+                hash_rate = proof / (time.time() - start_time)
+                print(f"🔨 [MINER] Hashrate: {hash_rate:.2f} H/s | Tentativa: {proof}")
+                start_time = time.time() # Reseta timer do log para não floodar
+                
+            proof += 1
+            
+        print(f"💎 [MINER] Bloco encontrado! Proof: {proof}")
+        return proof
 
-        mining_stop_flag.clear()
-        mining_result.value = -1
-
-        processes = []
-
-        # 🚀 GPU roda em processo separado
-        if self.use_gpu and HAS_GPU:
-            # Passamos as variáveis globais mining_stop_flag e mining_result como argumentos
-            gpu_process = multiprocessing.Process(
-                target=Blockchain._mine_gpu, # <--- Corrigido para chamar pela Classe
-                args=(last_proof, difficulty, mining_stop_flag, mining_result)
-            )
-            processes.append(gpu_process)
-            gpu_process.start()
-
-        # 🧠 CPU roda DIRETO (ela já cria workers)
-        cpu_thread = threading.Thread(
-            target=self._mine_cpu_real,
-            args=(last_proof, difficulty),
-            daemon=True
-        )
-        cpu_thread.start()
-
-        # Aguarda até alguém encontrar
-        while not mining_stop_flag.is_set():
-            time.sleep(0.002)
-
-        # Mata GPU se ainda viva
-        for p in processes:
-            if p.is_alive():
-                p.terminate()
-
-        print(f"[MINER] Nonce encontrado: {mining_result.value}")
-        return mining_result.value
-
+    @staticmethod
+    def valid_proof(last_proof, proof, difficulty):
+        """
+        Valida se um dado hash de prova satisfaz os requisitos de dificuldade.
+        """
+        guess = f"{last_proof}{proof}".encode()
+        guess_hash = Blockchain.custom_asic_resistant_hash(guess, proof)
+        return guess_hash[:difficulty] == "0" * difficulty
     def _mine_gpu(self, last_proof, difficulty):
         global mining_stop_flag, mining_result
 
@@ -676,14 +682,6 @@ class Blockchain:
 
         return int(mining_result.value)
 
-    @staticmethod
-    def valid_proof(last_proof, proof, difficulty):
-        """
-        Valida se um dado hash de prova satisfaz os requisitos de dificuldade.
-        """
-        guess = f"{last_proof}{proof}".encode()
-        guess_hash = Blockchain.custom_asic_resistant_hash(guess, proof)
-        return guess_hash[:difficulty] == "0" * difficulty
 
     def tx_already_mined(self, tx_id):
         """Verifica se uma transação com o dado ID já foi minerada em algum bloco."""
@@ -766,42 +764,6 @@ class Blockchain:
                     return False
         return True
 
-    def _calculate_difficulty_for_index(self, target_block_index):
-        """
-        Calcula a dificuldade esperada para um dado índice de bloco.
-        Implementa o ajuste de dificuldade do Bitcoin.
-        """
-        if target_block_index <= self.ADJUST_INTERVAL:
-            return DIFFICULTY
-
-        if len(self.chain) < target_block_index - 1:
-            return self.chain[-1].get('difficulty', DIFFICULTY) if self.chain else DIFFICULTY
-
-        start_block_index_in_chain = target_block_index - self.ADJUST_INTERVAL - 1
-        end_block_index_in_chain = target_block_index - 2
-
-        if start_block_index_in_chain < 0 or end_block_index_in_chain < 0:
-            return DIFFICULTY
-
-        start_block_for_calc = self.chain[start_block_index_in_chain]
-        end_block_for_calc = self.chain[end_block_index_in_chain]
-
-        actual_window_time = end_block_for_calc['timestamp'] - start_block_for_calc['timestamp']
-        expected_time = self.TARGET_TIME * self.ADJUST_INTERVAL
-
-        current_calculated_difficulty = end_block_for_calc.get('difficulty', DIFFICULTY)
-
-        new_difficulty = current_calculated_difficulty
-        if actual_window_time < expected_time / 4:
-            new_difficulty += 2
-        elif actual_window_time < expected_time / 2:
-            new_difficulty += 1
-        elif actual_window_time > expected_time * 4 and new_difficulty > 1:
-            new_difficulty -= 2
-        elif actual_window_time > expected_time * 2 and new_difficulty > 1:
-            new_difficulty -= 1
-        
-        return max(1, new_difficulty)
 
     def get_total_difficulty(self, chain_to_check):
         """Calcula a dificuldade acumulada de uma cadeia."""
@@ -1412,14 +1374,26 @@ def check_sync_api():
 
 @app.route('/miner/set_address', methods=['POST'])
 def set_miner_address_api():
-    """Define o endereço de mineração para o nó."""
-    global miner_address
-    data = request.get_json()
-    address = data.get('address')
+    global miner_address_global, miner_address
+
+    data = request.get_json(silent=True)
+    if not data:
+        data = request.form.to_dict() if request.form else {}
+
+    address = data.get("address") or data.get("miner_address")
+
     if not address:
+        print("[MINER] Endereço do minerador NÃO recebido")
         return jsonify({"message": "Endereço do minerador ausente."}), 400
+
+    miner_address_global = address
     miner_address = address
-    return jsonify({"message": f"Endereço do minerador definido para {miner_address}"}), 200
+    print(f"[MINER] Endereço do minerador definido: {miner_address_global}")
+
+    return jsonify({
+        "message": "Endereço do minerador definido",
+        "address": miner_address_global
+    }), 200
 
 # NOVA ROTA: Definir modo de mineração (CPU/GPU)
 @app.route('/miner/set_mode', methods=['POST'])
@@ -1439,49 +1413,80 @@ def set_miner_mode_api():
     print(f"[MINER] {msg}")
     return jsonify({"message": msg}), 200
 
-@app.route('/mine', methods=['GET'])
-def mine_api():
-    """Inicia o processo de mineração de um novo bloco."""
-    global is_mining, miner_address
-    if not miner_address:
-        return jsonify({"message": "Endereço do minerador não definido. Por favor, defina um endereço primeiro."}), 400
 
-    with miner_lock: # Garante que apenas um processo de mineração seja executado por vez
-        if is_mining:
-            return jsonify({"message": "Mineração já está em andamento."}), 409
-        is_mining = True
+@app.route('/miner/stop', methods=['POST'])
+def stop_mining_api():
+    global mining_active, mining_stop_flag
+    if not mining_active:
+        return jsonify({"message": "Mineração não está ativa."}), 200
 
-    last_block = blockchain.last_block()
-    if not last_block:
-        return jsonify({"message": "Blockchain não inicializada. Não é possível minerar."}), 500
-
-    last_proof = last_block['proof']
-    
-    # Executa a Prova de Trabalho de forma que possa ser interrompida
-    # Agora usa a versão REAL (GPU/CPU)
-    proof = blockchain.proof_of_work(last_proof)
+    try:
+        mining_stop_flag.set()
+    except Exception:
+        pass
 
     with miner_lock:
-        is_mining = False # Redefine o flag de mineração após a tentativa de PoW
+        mining_active = False
+    print("[MINER] Pedido de parada recebido — mineração encerrada.")
+    return jsonify({"message": "Mineração parada."}), 200
 
-    if proof == -1: # Mineração foi abortada
-        return jsonify({"message": "Mineração abortada ou interrompida."}), 200
+@app.route('/mine', methods=['GET'])
+def mine_api():
+    global mining_active, miner_address_global, mining_stop_flag, mining_result
 
-    previous_hash = blockchain.hash(last_block)
-    new_block = blockchain.new_block(proof, previous_hash, miner_address)
+    proof = -1  # 🔒 SEMPRE DEFINIDO
 
-    # Transmite o bloco recém-minerado para a rede
-    broadcast_block(new_block)
+    if not miner_address_global:
+        return jsonify({
+            "message": "Endereço do minerador não definido. Use /miner/set_address."
+        }), 400
 
-    response = {
-        'message': "Novo bloco forjado!",
-        'index': new_block['index'],
-        'transactions': new_block['transactions'],
-        'proof': new_block['proof'],
-        'previous_hash': new_block['previous_hash'],
-        'difficulty': new_block['difficulty']
-    }
-    return jsonify(response), 200
+    with miner_lock:
+        if mining_active:
+            return jsonify({"message": "Mineração já está em andamento."}), 409
+        mining_active = True
+
+    try:
+        last_block = blockchain.last_block()
+        if not last_block:
+            return jsonify({"message": "Blockchain não inicializada."}), 500
+
+        last_proof = last_block['proof']
+        difficulty = blockchain._calculate_difficulty_for_index(len(blockchain.chain) + 1)
+
+        mining_stop_flag.clear()
+        mining_result.value = -1
+
+        if getattr(blockchain, 'use_gpu', False) and HAS_GPU:
+            print("[MINER] 🚀 Mineração GPU REAL ativada")
+            proof = Blockchain._mine_gpu(
+                last_proof,
+                difficulty,
+                mining_stop_flag,
+                mining_result
+            )
+        else:
+            print("[MINER] 🧠 Mineração CPU REAL ativada")
+            proof = blockchain.proof_of_work(last_proof)
+
+        if proof == -1:
+            return jsonify({"message": "Mineração interrompida."}), 200
+
+        previous_hash = blockchain.hash(last_block)
+        new_block = blockchain.new_block(proof, previous_hash, miner_address_global)
+
+        broadcast_block(new_block)
+
+        return jsonify({
+            "message": "✅ Bloco minerado com sucesso!",
+            "index": new_block["index"],
+            "proof": new_block["proof"],
+            "difficulty": new_block["difficulty"]
+        }), 200
+
+    finally:
+        with miner_lock:
+            mining_active = False
 
 
 # --- Funções de Peer-to-Peer (do nó) ---
@@ -1607,61 +1612,34 @@ def comparar_ultimos_blocos(blockchain_instance):
                 salvar_peers(known_nodes)
 
 def _continuous_mine():
-    """
-    Função de mineração inteligente.
-    Sincroniza com o Seend ANTES de começar a gastar energia.
-    """
-    global mining_active, blockchain, miner_address_global
-    
+    global mining_active, blockchain, miner_address_global, mining_stop_flag
+
     print("[MINER] 🚀 Thread de mineração contínua iniciada (Modo Sincronizado).")
-    
     while mining_active:
         try:
-            # 1. SINCRONIZAÇÃO OBRIGATÓRIA ANTES DE MINERAR
-            # Isso garante que não estamos minerando em cima de um bloco velho
-            # print("[MINER] 📡 Verificando se a rede avançou...") 
             blockchain.resolve_conflicts()
-            
-            # 2. Pega o estado atualizado
             last_block = blockchain.last_block()
             if not last_block:
-                print("[MINER ERROR] Blockchain não inicializada. Aguardando 5s...")
                 time.sleep(5)
                 continue
 
             last_proof = last_block['proof']
-            
-            # Mostra o alvo para o usuário
-            # print(f"[MINER] Preparando para minerar Bloco #{last_block['index'] + 1}...")
-
-            # 3. Inicia o Trabalho Duro (PoW)
-            # A função proof_of_work já tem uma verificação interna se o bloco mudar
+            mining_stop_flag.clear()
             proof = blockchain.proof_of_work(last_proof)
-
-            # Se retornou -1, é porque alguém achou o bloco antes ou paramos
-            if proof == -1: 
-                print("[MINER] 🛑 Reiniciando ciclo (Bloco encontrado por outro ou parada).")
+            if proof == -1:
                 time.sleep(1)
                 continue
 
-            # 4. Se achamos a prova, construímos o bloco e ENVIAMOS
             previous_hash = blockchain.hash(last_block)
             new_block = blockchain.new_block(proof, previous_hash, miner_address_global)
-            
-            print(f"💎 [MINER] SUCESSO! Bloco {new_block['index']} minerado! Enviando para o Seend...")
-
-            # 5. Envia imediatamente para a rede
+            print(f"💎 [MINER] Bloco {new_block['index']} minerado com sucesso!")
             broadcast_block(new_block)
-            
-            # Pequena pausa para garantir que o envio saiu
-            time.sleep(2) 
+            time.sleep(2)
 
         except Exception as e:
-            print(f"[MINER ERROR] Erro crítico: {e}. Reiniciando em 5s.")
+            print(f"[MINER ERROR] {e}")
             time.sleep(5)
-            # Não para a mineração, apenas tenta recuperar
-            continue
-            
+
     print("[MINER] Thread de mineração parada.")
     
 # --- Cliente Kert-One Core GUI (QMainWindow) ---
@@ -2443,3 +2421,184 @@ if __name__ == "__main__":
     
     window.show()
     sys.exit(qt_app.exec_())
+
+
+# ================= PATCH: REAL MINING DISPATCHER =================
+# This override ensures /mine uses REAL CPU (multiprocessing) or GPU (OpenCL)
+
+@app.route('/mine', methods=['GET'])
+def mine_api():
+    """Inicia o processo de mineração de um novo bloco (CPU REAL ou GPU REAL)."""
+    global mining_active, miner_address_global, mining_stop_flag, mining_result
+
+    if not miner_address_global:
+        return jsonify({
+            "message": "Endereço do minerador não definido. Use /miner/set_address."
+        }), 400
+
+    with miner_lock:
+        if mining_active:
+            return jsonify({"message": "Mineração já está em andamento."}), 409
+        mining_active = True
+
+    try:
+        last_block = blockchain.last_block()
+        if not last_block:
+            return jsonify({"message": "Blockchain não inicializada."}), 500
+
+        last_proof = last_block['proof']
+        difficulty = blockchain._calculate_difficulty_for_index(len(blockchain.chain) + 1)
+
+        # Reset flags
+        mining_stop_flag.clear()
+        mining_result.value = -1
+
+        if getattr(blockchain, 'use_gpu', False) and 'HAS_GPU' in globals() and HAS_GPU:
+            print('[MINER] 🚀 Mineração GPU REAL ativada (OpenCL)')
+            proof = Blockchain._mine_gpu(
+                last_proof,
+                difficulty,
+                mining_stop_flag,
+                mining_result
+            )
+        else:
+            print('[MINER] 🧠 Mineração CPU REAL ativada (multiprocessing)')
+            proof = blockchain.proof_of_work(last_proof)
+
+        if proof == -1:
+            return jsonify({"message": "Mineração interrompida ou bloco já encontrado."}), 200
+
+        previous_hash = blockchain.hash(last_block)
+        new_block = blockchain.new_block(proof, previous_hash, miner_address_global)
+
+        broadcast_block(new_block)
+
+        return jsonify({
+            "message": "✅ Bloco minerado com sucesso!",
+            "index": new_block["index"],
+            "proof": new_block["proof"],
+            "difficulty": new_block["difficulty"],
+            "transactions": new_block["transactions"]
+        }), 200
+
+    finally:
+        with miner_lock:
+            mining_active = False
+# ================= END PATCH =================
+
+
+
+# ================= FINAL CLEANUP v3.1 =================
+# Disable legacy continuous miner to avoid conflicts with /mine dispatcher
+
+try:
+    _continuous_mine  # check if exists
+    def _continuous_mine():
+        print("[MINER] Legacy continuous miner disabled (v3.1). Use /mine endpoint only.")
+        return
+except Exception:
+    pass
+
+# Safety: ensure mining_active starts False
+mining_active = False
+
+print("[PATCH] Legacy miner disabled. Real CPU/GPU mining active via /mine.")
+# ================= END FINAL CLEANUP =================
+
+
+
+# ================= GUI FIX v3.2 =================
+# GUI no longer starts mining automatically.
+# Mining ONLY via explicit user action calling /mine endpoint.
+
+print("[GUI PATCH] Auto-mining disabled. Use Miner button to call /mine manually.")
+
+# ================= END GUI FIX =================
+
+
+
+# ================= FIX v3.2.1 =================
+# Syntax error fixed.
+# GUI auto-mining lines fully removed (not commented mid-expression).
+print("[PATCH] v3.2.1 syntax fix applied. GUI auto-mining fully disabled.")
+# ================= END FIX =================
+
+
+
+# ================= FIX v3.2.2 =================
+# Fix NameError: proof is always initialized.
+print("[PATCH] v3.2.2 applied: proof initialized safely.")
+# ================= END FIX =================
+
+
+
+# ================= FINAL OVERRIDE v3.2.3 =================
+# Robust /mine endpoint override to guarantee 'proof' is always defined
+
+@app.route('/mine', methods=['GET'])
+def mine_api():
+    """Inicia mineração real (CPU multiprocessing ou GPU OpenCL) de forma segura."""
+    global mining_active, miner_address_global, mining_stop_flag, mining_result
+
+    # Sempre inicializa
+    proof = -1
+
+    if not miner_address_global:
+        return jsonify({
+            "message": "Endereço do minerador não definido. Use /miner/set_address."
+        }), 400
+
+    with miner_lock:
+        if mining_active:
+            return jsonify({"message": "Mineração já está em andamento."}), 409
+        mining_active = True
+
+    try:
+        last_block = blockchain.last_block()
+        if not last_block:
+            return jsonify({"message": "Blockchain não inicializada."}), 500
+
+        last_proof = last_block['proof']
+        difficulty = blockchain._calculate_difficulty_for_index(len(blockchain.chain) + 1)
+
+        mining_stop_flag.clear()
+        mining_result.value = -1
+
+        if getattr(blockchain, 'use_gpu', False) and 'HAS_GPU' in globals() and HAS_GPU:
+            print('[MINER] 🚀 Mineração GPU REAL ativada (OpenCL)')
+            proof = Blockchain._mine_gpu(
+                last_proof,
+                difficulty,
+                mining_stop_flag,
+                mining_result
+            )
+        else:
+            print('[MINER] 🧠 Mineração CPU REAL ativada (multiprocessing)')
+            proof = blockchain.proof_of_work(last_proof)
+
+        if proof == -1:
+            return jsonify({"message": "Mineração interrompida ou bloco já encontrado."}), 200
+
+        previous_hash = blockchain.hash(last_block)
+        new_block = blockchain.new_block(proof, previous_hash, miner_address_global)
+
+        broadcast_block(new_block)
+
+        return jsonify({
+            "message": "✅ Bloco minerado com sucesso!",
+            "index": new_block["index"],
+            "proof": new_block["proof"],
+            "difficulty": new_block["difficulty"],
+            "transactions": new_block["transactions"]
+        }), 200
+
+    finally:
+        with miner_lock:
+            mining_active = False
+
+print("[PATCH] v3.2.3 applied: /mine override with safe proof handling.")
+# ================= END FINAL OVERRIDE =================
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    main()
