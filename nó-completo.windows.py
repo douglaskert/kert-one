@@ -493,7 +493,7 @@ class Blockchain:
             res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
 
-            batch_size = 8000000  # Ajustável
+            batch_size = 50000000  # ou mais, depende da GPU
             current_nonce = 0
 
             while not mining_stop_flag.is_set():
@@ -587,7 +587,7 @@ class Blockchain:
             res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
 
-            batch_size = 8000000 # Tamanho do lote para GTX 1060
+            batch_size = 50000000  # ou mais, depende da GPU
             current_nonce = 0
 
             # Loop de Mineração
@@ -625,7 +625,7 @@ class Blockchain:
                 current_nonce += batch_size
                 
                 # Pequena pausa para evitar travamento total do PC
-                time.sleep(0.002)
+                time.sleep(0.008)
 
         except Exception as e:
             print(f"[GPU ERROR] {e}. (A CPU assumirá se configurada)")
