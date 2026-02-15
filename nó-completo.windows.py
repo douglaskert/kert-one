@@ -59,7 +59,7 @@ WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do clien
 # --- NÓS SEMENTES (SEED NODES) ---
 SEED_NODES = [
     "https://seend.kert-one.com",
-    "https://seend2.kert-one.com",
+    #"https://seend2.kert-one.com",
     "http://seend3.kert-one.com:8001"
 ]
 
@@ -116,7 +116,10 @@ __kernel void search_block(__global unsigned int *result, __global int *found, c
         unsigned int data[16] = {0}; 
         data[0] = nonce;
         sha256_transform(state, data);
-        if (state[0] < (0xFFFFFFFF / difficulty)) {
+        
+        // --- LINHA CORRIGIDA ABAIXO ---
+        // Garante que só pare se tiver os zeros EXATOS (Hex "0000" para Dif 4)
+        if (state[0] <= (0xFFFFFFFF >> (difficulty * 4))) {
             *result = nonce;
             *found = 1;
             return;
