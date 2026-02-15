@@ -166,34 +166,33 @@ mining_result = multiprocessing.Value('i', -1)
 # --- Classe Blockchain ---
 class Blockchain:
     ADJUST_INTERVAL = 10# Blocos para recalcular dificuldade
-    TARGET_TIME = 600 # Tempo alvo entre blocos em segundos (10 minutos)
+    TARGET_TIME = 30 # Tempo alvo entre blocos em segundos (10 minutos)
 
     def _calculate_difficulty_for_index(self, target_block_index):
-
-        # Só ajusta em múltiplos de 2016
+        # 1. Só muda a cada 10 blocos (Intervalo de Ajuste)
         if target_block_index % self.ADJUST_INTERVAL != 0:
-            return self.chain[-1].get('difficulty', DIFFICULTY)
+            return self.chain[-1].get('difficulty', 4)
 
         if len(self.chain) < self.ADJUST_INTERVAL:
-            return DIFFICULTY
+            return 4 # Dificuldade inicial base
     
+        # 2. Pega o tempo real que levou para minerar os últimos 10 blocos
         last_block = self.chain[-1]
         first_block = self.chain[-self.ADJUST_INTERVAL]
-
         actual_time = last_block['timestamp'] - first_block['timestamp']
+        
+        # 3. Quanto tempo o sistema esperava que levasse (10 blocos * 30 seg)
         expected_time = self.ADJUST_INTERVAL * self.TARGET_TIME
 
-        # Limite estilo Bitcoin (¼x a 4x)
-        actual_time = max(expected_time // 4, min(actual_time, expected_time * 4))
-
+        # 4. Cálculo da nova dificuldade baseada no esforço real
         old_diff = last_block['difficulty']
+        
+        # Fórmula: Nova Dif = Dif Antiga * (Tempo Esperado / Tempo Real)
+        # Se você foi 2x mais rápido que 30s, a dificuldade dobra.
         new_diff = int(old_diff * (expected_time / actual_time))
 
-        print(f"[DIFF BITCOIN] antiga={old_diff} nova={new_diff}")
-
-        # --- AQUI ESTÁ A CORREÇÃO ---
-        # Garante que a dificuldade seja no mínimo 1 e no máximo 12
-        return min(12, max(1, new_diff))
+        # 5. Segurança: No mínimo 1, no máximo 20 (para não travar sua GTX 1060)
+        return max(1, min(20, new_diff))
         
     def __init__(self, conn, node_id):
         self.conn = conn
