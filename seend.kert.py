@@ -90,17 +90,22 @@ __kernel void search_block(
     const uint start_nonce
 ) {
     uint gid = get_global_id(0);
-    uint nonce = start_nonce + gid;
-    uint state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    uint data[16] = {0}; 
-    data[0] = nonce;
-    sha256_transform(state, data);
-    if (state[0] < (0xFFFFFFFF / difficulty) && *found == 0) {
-        *result = nonce;
-        *found = 1;
+    uint loop_count = 2000; // ADICIONE ESTE LOOP PARA ALINHAR COM O WINDOWS
+    
+    for(uint i=0; i < loop_count; i++) {
+        if(*found != 0) return;
+        uint nonce = start_nonce + (gid * loop_count) + i;
+        uint state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+        uint data[16] = {0}; 
+        data[0] = nonce;
+        sha256_transform(state, data);
+        if (state[0] < (0xFFFFFFFF / difficulty)) {
+            *result = nonce;
+            *found = 1;
+            return;
+        }
     }
 }
-"""
 
 app = Flask(__name__)
 node_id = str(uuid4()).replace('-', '')
