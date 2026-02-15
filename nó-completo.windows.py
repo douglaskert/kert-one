@@ -55,7 +55,7 @@ WALLET_FILE = "client_wallet.json" # Caminho para o arquivo da carteira do clien
 SEED_NODES = [
     "https://seend.kert-one.com",
     "https://seend2.kert-one.com",
-    "http://seend3.kert-one.com:8001",
+    "http://seend3.kert-one.com:8001"
 ]
 
 # --- KERNEL REAL SHA256 PARA GPU (INJEÇÃO) ---
@@ -1273,92 +1273,84 @@ def verify_signature(public_key_hex, signature_hex, tx_data):
         
 @app.route('/blocks/receive', methods=['POST'])
 def receive_block_api():
-    """Recebe um bloco de outro nó e tenta adicioná-lo à cadeia local."""
     block_data = request.get_json()
     if not block_data:
-        print("[RECEIVE_BLOCK ERROR] Nenhum dado de bloco recebido.")
         return jsonify({"message": "Nenhum dado de bloco recebido."}), 400
 
-    required_keys = ['index', 'previous_hash', 'proof', 'timestamp', 'miner', 'transactions', 'difficulty']
-    if not all(k in block_data for k in required_keys):
-        print(f"[RECEIVE_BLOCK ERROR] Bloco recebido com chaves ausentes: {block_data}")
-        return jsonify({"message": "Dados de bloco incompletos ou malformados."}), 400
+    required = ['index','previous_hash','proof','timestamp','miner','transactions','difficulty','protocol_value']
+    if not all(k in block_data for k in required):
+        return jsonify({"message": "Dados de bloco incompletos."}), 400
+
+    try:
+        block_data['index'] = int(block_data['index'])
+        block_data['difficulty'] = int(block_data['difficulty'])
+        block_data['proof'] = int(block_data['proof'])
+        block_data['timestamp'] = float(block_data['timestamp'])
+    except:
+        return jsonify({'message': 'Tipos inválidos'}), 400
 
     if not blockchain.chain:
-        print("[RECEIVE_BLOCK INFO] Cadeia local vazia. Iniciando resolução de conflitos para sincronização inicial.")
         threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
-        return jsonify({'message': 'Cadeia local vazia. Tentando sincronizar com a rede.'}), 202
+        return jsonify({'message': 'Sincronizando cadeia inicial.'}), 202
 
-    last_local_block = blockchain.last_block()
+    last_block = blockchain.last_block()
 
-    if block_data['index'] <= last_local_block['index']:
-        if block_data['index'] == last_local_block['index'] and \
-           block_data['previous_hash'] == last_local_block['previous_hash'] and \
-           block_data['proof'] == last_local_block['proof'] and \
-           block_data['miner'] == last_local_block['miner'] and \
-           block_data['difficulty'] == last_local_block['difficulty']:
-            print(f"[RECEIVE_BLOCK INFO] Bloco {block_data['index']} já recebido e processado (duplicado).")
-            return jsonify({'message': 'Bloco já recebido e processado'}), 200
-        else:
-            print(f"[RECEIVE_BLOCK INFO] Bloco {block_data['index']} é antigo ou de um fork mais curto/inválido (Local: {last_local_block['index']}). Ignorando.")
-            return jsonify({'message': 'Bloco antigo ou de um fork irrelevante.'}), 200
+    if block_data['index'] <= last_block['index']:
+        return jsonify({'message': 'Bloco antigo/duplicado.'}), 200
 
-    if block_data['index'] == last_local_block['index'] + 1:
-        expected_previous_hash = blockchain.hash(last_local_block)
-        if block_data['previous_hash'] != expected_previous_hash:
-            print(f"[RECEIVE_BLOCK ERROR] Bloco {block_data['index']}: Hash anterior incorreto. Esperado: {expected_previous_hash}, Recebido: {block_data['previous_hash']}. Iniciando sincronização.")
-            threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
-            return jsonify({'message': 'Hash anterior incorreto, resolução de conflitos iniciada'}), 400
-
-        if not blockchain.valid_proof(last_local_block['proof'], block_data['proof'], block_data['difficulty']):
-            print(f"[RECEIVE_BLOCK ERROR] Bloco {block_data['index']}: Prova de Trabalho inválida. Iniciando sincronização.")
-            threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
-            return jsonify({'message': 'Prova inválida, resolução de conflitos iniciada'}), 400
-
-        for tx in block_data.get('transactions', []):
-            if tx['sender'] == '0':
-                continue
-            
-            try:
-                # Certificar que amount e fee são strings formatadas para verificação
-                tx_for_verification = {
-                    'id': tx['id'],
-                    'sender': tx['sender'],
-                    'recipient': tx['recipient'],
-                    'amount': f"{float(tx['amount']):.8f}", # Garante formato string .8f
-                    'fee': f"{float(tx['fee']):.8f}",        # Garante formato string .8f
-                    'public_key': tx['public_key'],
-                    'signature': tx['signature'],
-                    'timestamp': tx.get('timestamp', time.time())
-                }
-                if not verify_signature(tx_for_verification['public_key'], tx_for_verification['signature'], tx_for_verification):
-                    raise ValueError(f"Assinatura inválida para transação {tx.get('id', 'N/A')}")
-
-            except Exception as e:
-                print(f"[RECEIVE_BLOCK ERROR] Transação inválida {tx.get('id', 'N/A')} no bloco {block_data['index']}: {e}. Iniciando sincronização.")
-                threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
-                return jsonify({'message': f'Transação inválida no bloco: {e}'}), 400
-        
-        print(f"[RECEIVE_BLOCK SUCCESS] Bloco {block_data['index']} aceito e adicionado localmente.")
-        blockchain.chain.append(block_data)
-        blockchain._save_block(block_data)
-
-        mined_tx_ids = {t.get('id') for t in block_data.get('transactions', []) if t.get('id')}
-        blockchain.current_transactions = [
-            tx for tx in blockchain.current_transactions if tx.get('id') not in mined_tx_ids
-        ]
-        print(f"[RECEIVE_BLOCK] Removidas {len(mined_tx_ids)} transações da fila pendente.")
-                
-        return jsonify({'message': 'Bloco aceito e adicionado'}), 200
-
-    elif block_data['index'] > last_local_block['index'] + 1:
-        print(f"[RECEIVE_BLOCK INFO] Bloco {block_data['index']} está à frente da cadeia local ({last_local_block['index']}). Iniciando resolução de conflitos.")
+    if block_data['index'] > last_block['index'] + 1:
         threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
-        return jsonify({'message': 'Bloco está à frente. Iniciando sincronização.'}), 202
+        return jsonify({'message': 'Bloco à frente. Sincronizando.'}), 202
 
-    print(f"[RECEIVE_BLOCK WARNING] Condição inesperada para o bloco {block_data['index']}. Iniciando resolução de conflitos.")
-    threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
-    return jsonify({'message': 'Bloco com status inesperado, resolução de conflitos iniciada'}), 400
+    if block_data['previous_hash'] != blockchain.hash(last_block):
+        threading.Thread(target=blockchain.resolve_conflicts, daemon=True).start()
+        return jsonify({'message': 'Hash anterior inválido'}), 400
+
+    if not blockchain.valid_proof(last_block['proof'], block_data['proof'], block_data['difficulty']):
+        return jsonify({'message': 'Proof of Work inválido'}), 400
+
+    if block_data['timestamp'] > time.time() + 120:
+        return jsonify({'message': 'Timestamp no futuro'}), 400
+
+    # 🔥 AQUI ESTÁ A CORREÇÃO
+    # Não rejeitamos bloco por diferença de protocol_value
+    try:
+        peer_value = float(block_data.get('protocol_value', 0))
+        if peer_value <= 0:
+            return jsonify({'message': 'Protocol Value estruturalmente inválido'}), 400
+    except:
+        return jsonify({'message': 'Protocol Value inválido'}), 400
+
+    # Validação de transações
+    for tx in block_data['transactions']:
+        if tx['sender'] == '0':
+            continue
+        try:
+            tx_for_verification = {
+                'amount': f"{float(tx['amount']):.8f}",
+                'fee': f"{float(tx['fee']):.8f}",
+                'recipient': tx['recipient'],
+                'sender': tx['sender']
+            }
+            pub = tx.get('public_key','')
+            if isinstance(pub,str) and pub.startswith("04") and len(pub)==130:
+                pub = pub[2:]
+            if not verify_signature(pub, tx['signature'], tx_for_verification):
+                raise ValueError
+        except:
+            return jsonify({'message': 'Transação inválida'}), 400
+
+    temp_chain = blockchain.chain + [block_data]
+    if not blockchain.valid_chain(temp_chain):
+        return jsonify({'message': 'Bloco quebra regras da cadeia'}), 400
+
+    blockchain.chain.append(block_data)
+    blockchain._save_block(block_data)
+
+    mined_ids = {t.get('id') for t in block_data['transactions']}
+    blockchain.current_transactions = [tx for tx in blockchain.current_transactions if tx.get('id') not in mined_ids]
+
+    return jsonify({'message': 'Bloco aceito'}), 200
 
 @app.route('/sync/check', methods=['GET'])
 def check_sync_api():
@@ -1491,25 +1483,42 @@ def mine_api():
 
 # --- Funções de Peer-to-Peer (do nó) ---
 def broadcast_block(block):
-    """Envia um bloco recém-minerado para todos os peers conhecidos."""
-    print(f"[BROADCAST] Enviando bloco #{block['index']} para {len(known_nodes)} peers...")
+    """Envia um bloco recém-minerado para todos os peers E obrigatoriamente para os Seeds."""
+    
+    # 1. Cria um conjunto com TODOS os nós conhecidos + os SEEDS oficiais
+    # O uso de 'set' evita duplicatas se o seed já estiver no peers.json
+    all_targets = set(known_nodes) | set(SEED_NODES)
+    
+    print(f"[BROADCAST] 🚀 Enviando bloco #{block['index']} para {len(all_targets)} nós (Prioridade: Seeds)...")
+    
     peers_to_remove = set()
-    for peer in known_nodes.copy():
-        if peer == meu_url: continue
+    
+    for peer in all_targets:
+        # Pula se for o próprio endereço (evita loop)
+        if peer == meu_url: continue 
+        
         try:
-            requests.post(f"{peer}/blocks/receive", json=block, timeout=5)
+            # Tenta enviar o bloco via POST
+            print(f"   -> Enviando para: {peer}...")
+            response = requests.post(f"{peer}/blocks/receive", json=block, timeout=5)
+            
+            # Se for o SEEND e der certo, avisa no log
+            if peer in SEED_NODES and response.status_code == 200:
+                print(f"   ✅ [CONFIRMADO] Bloco aceito pelo SEED OFICIAL: {peer}")
+                
         except requests.exceptions.RequestException as e:
-            print(f"[BROADCAST] Erro ao enviar bloco para {peer}: {e}. Removendo peer (se não for seed).")
+            print(f"   ❌ Erro ao enviar bloco para {peer}: {e}")
+            
+            # Só remove da lista se NÃO for um Seed oficial
             if peer not in SEED_NODES:
                 peers_to_remove.add(peer)
         except Exception as e:
-            print(f"[BROADCAST] Erro inesperado ao enviar bloco para {peer}: {e}")
+            print(f"   ❌ Erro inesperado em {peer}: {e}")
     
+    # Atualiza a lista de peers removendo os que falharam (exceto seeds)
     if peers_to_remove:
         known_nodes.difference_update(peers_to_remove)
         salvar_peers(known_nodes)
-        print(f"[BROADCAST] Removidos {len(peers_to_remove)} peers problemáticos.")
-
 
 def discover_peers():
     global known_nodes, meu_url
@@ -2378,9 +2387,14 @@ if __name__ == "__main__":
     
     sincronizado = False
     
+    # --- CORREÇÃO AQUI (Era 'or', mudou para 'for') ---
     # Adiciona os Seeds à lista de conhecidos
     for seed in SEED_NODES:
         known_nodes.add(seed)
+    
+    # --- CRIA O ARQUIVO PEERS.JSON AGORA ---
+    salvar_peers(known_nodes) 
+    print("[SISTEMA] Lista de peers iniciais salva em peers.json")
 
     # Tenta forçar a sincronização AGORA
     if blockchain.resolve_conflicts():
@@ -2421,7 +2435,6 @@ if __name__ == "__main__":
     
     window.show()
     sys.exit(qt_app.exec_())
-
 
 # ================= PATCH: REAL MINING DISPATCHER =================
 # This override ensures /mine uses REAL CPU (multiprocessing) or GPU (OpenCL)
