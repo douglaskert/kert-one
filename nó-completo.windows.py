@@ -63,12 +63,14 @@ SEED_NODES = [
     "http://seend3.kert-one.com:8001"
 ]
 
+import pyopencl as cl
+for p in cl.get_platforms():
+    print("PLATFORM:", p.name)
+    for d in p.get_devices():
+        print("  DEVICE:", d.name, "type:", d.type, "mem:", d.global_mem_size)
+        
 # --- KERNEL REAL SHA256 PARA GPU (INJEÇÃO) ---
-# Este kernel realiza o hash duplo SHA256 (padrão Bitcoin) na GPU
 OPENCL_KERNEL = """
-typedef unsigned int uint;
-typedef unsigned char uchar;
-
 #define ROR(x, y) ((x >> y) | (x << (32 - y)))
 #define Ch(x, y, z) (z ^ (x & (y ^ z)))
 #define Maj(x, y, z) ((x & y) | (z & (x | y)))
@@ -77,8 +79,7 @@ typedef unsigned char uchar;
 #define s0(x) (ROR(x, 7) ^ ROR(x, 18) ^ (x >> 3))
 #define s1(x) (ROR(x, 17) ^ ROR(x, 19) ^ (x >> 10))
 
-// Constantes SHA256 K
-__constant uint K[64] = {
+__constant unsigned int K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -89,53 +90,38 @@ __constant uint K[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-void sha256_transform(uint *state, const uint *data) {
-    uint a, b, c, d, e, f, g, h, t1, t2, i;
-    uint W[64];
-
-    for (i = 0; i < 16; ++i) W[i] = data[i];
-    for (i = 16; i < 64; ++i) W[i] = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
-
+void sha256_transform(unsigned int *state, const unsigned int *data) {
+    unsigned int a, b, c, d, e, f, g, h, t1, t2;
+    unsigned int W[64];
+    for (int i = 0; i < 16; ++i) W[i] = data[i];
+    for (int i = 16; i < 64; ++i) W[i] = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
     a = state[0]; b = state[1]; c = state[2]; d = state[3];
     e = state[4]; f = state[5]; g = state[6]; h = state[7];
-
-    for (i = 0; i < 64; ++i) {
+    for (int i = 0; i < 64; ++i) {
         t1 = h + S1(e) + Ch(e, f, g) + K[i] + W[i];
         t2 = S0(a) + Maj(a, b, c);
         h = g; g = f; f = e; e = d + t1;
         d = c; c = b; b = a; a = t1 + t2;
     }
-
     state[0] += a; state[1] += b; state[2] += c; state[3] += d;
     state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 }
 
-__kernel void search_block(
-    __global uint *result, 
-    __global int *found,
-    const uint difficulty,
-    const uint start_nonce
-) {
-    uint gid = get_global_id(0);
-    uint nonce = start_nonce + gid;
-    
-    // Hash Simples para demonstracao (Real requereria bloco completo input)
-    // Aqui usamos uma carga pesada simulada de SHA256 real
-    uint state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    uint data[16] = {0}; 
-    data[0] = nonce; // Varia o nonce
-    
-    // Passada 1
-    sha256_transform(state, data);
-    
-    // Verifica zeros à esquerda (dificuldade)
-    // Lógica simplificada para GPU: verifica se o hash começa com zeros
-    // Adaptar para dificuldade real requer verificar bits high-endian
-    
-    // Se atender dificuldade (simulado aqui como divisibilidade para kernel simples)
-    if (state[0] < (0xFFFFFFFF / difficulty) && *found == 0) {
-        *result = nonce;
-        *found = 1;
+__kernel void search_block(__global unsigned int *result, __global int *found, const unsigned int difficulty, const unsigned int start_nonce) {
+    unsigned int gid = get_global_id(0);
+    unsigned int loop_count = 2000;
+    for(unsigned int i=0; i < loop_count; i++) {
+        if(*found != 0) return;
+        unsigned int nonce = start_nonce + (gid * loop_count) + i;
+        unsigned int state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+        unsigned int data[16] = {0}; 
+        data[0] = nonce;
+        sha256_transform(state, data);
+        if (state[0] < (0xFFFFFFFF / difficulty)) {
+            *result = nonce;
+            *found = 1;
+            return;
+        }
     }
 }
 """
@@ -498,7 +484,7 @@ class Blockchain:
             res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
 
-            batch_size = 150000000  # ou mais, depende da GPU
+            batch_size = 500000000  # ou mais, depende da GPU
             current_nonce = 0
 
             while not mining_stop_flag.is_set():
@@ -539,7 +525,7 @@ class Blockchain:
                 current_nonce += batch_size
 
                 # Throttle para ~80%
-                time.sleep(0.002)
+                #time.sleep(0.002)
 
         except Exception as e:
             print(f"[GPU ERROR] {e}. Fallback CPU.")
@@ -552,78 +538,65 @@ class Blockchain:
         try:
             import pyopencl as cl
             import numpy as np
-            import time # <--- Necessário para calcular o tempo
-        except ImportError:
-            print("[GPU ERROR] PyOpenCL não instalado.")
-            return -1
-
-        print("[GPU] Inicializando contexto OpenCL no processo filho...")
+            import time
+        except ImportError: return -1
 
         try:
             platforms = cl.get_platforms()
-            if not platforms: raise Exception("Nenhuma plataforma encontrada")
-            target_platform = platforms[0]
-            devices = target_platform.get_devices(device_type=cl.device_type.GPU)
-            if not devices: raise Exception("Nenhuma GPU encontrada")
-            target_device = devices[0]
-
-            ctx_props = [(cl.context_properties.PLATFORM, target_platform)]
-            ctx = cl.Context(devices=[target_device], properties=ctx_props)
+            target_platform = next((p for p in platforms if "nvidia" in p.name.lower()), platforms[0])
+            device = target_platform.get_devices(device_type=cl.device_type.GPU)[0]
+            
+            ctx = cl.Context(devices=[device])
             queue = cl.CommandQueue(ctx)
             prg = cl.Program(ctx, OPENCL_KERNEL).build()
             kernel = cl.Kernel(prg, "search_block")
 
+            # Buffers
             result_nonce = np.zeros(1, dtype=np.uint32)
             found = np.zeros(1, dtype=np.int32)
-            mf = cl.mem_flags
-            res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
-            found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
+            res_buf = cl.Buffer(ctx, cl.mem_flags.WRITE_ONLY, result_nonce.nbytes)
+            found_buf = cl.Buffer(ctx, cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR, hostbuf=found)
 
-            # Ajuste de potência
-            batch_size = 150000000 
+            # --- CONFIGURAÇÃO TÉCNICA OTIMIZADA ---
+            batch_size = 10000000 # 10 Milhões de threads
+            loop_intern0 = 2000   # Cada thread faz 2k tentativas
             current_nonce = 0
-            
-            # Variáveis para calcular velocidade
             start_time = time.time()
-            hashes_processed = 0
+            total_hashes = 0
+
+            print(f"🚀 [GPU] MODO TURBO ATIVO: {device.name}")
+            print(f"📊 [INFO] Carga por ciclo: {(batch_size * loop_intern0)/1e9:.1f} Bilhões de hashes")
 
             while not stop_event.is_set():
-                
-                # Executa
+                # Dispara o Kernel
                 kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce))
+                queue.finish() # Trava o Python aqui até a GPU terminar tudo
                 
-                # Lê resultado
                 cl.enqueue_copy(queue, found, found_buf)
-                queue.finish()
     
-                # --- CÁLCULO DE VELOCIDADE (NOVO) ---
-                hashes_processed += batch_size
+                # --- MEDIDOR DE HASH REAL (OPÇÃO C) ---
+                total_hashes += (batch_size * loop_intern0)
                 elapsed = time.time() - start_time
-                if elapsed >= 2.0: # Mostra a cada 2 segundos
-                    hashrate = hashes_processed / elapsed
-                    # Mostra em MH/s (Milhões de Hashes por segundo)
-                    print(f"🚀 [GPU] Velocidade: {hashrate/1000000:.2f} MH/s | Nonce: {current_nonce}")
-                    # Reseta o cronômetro
+                if elapsed >= 2.0:
+                    hashrate = total_hashes / elapsed
+                    print(f"🔥 [GPU] Real: {hashrate/1e6:.2f} MH/s | Status: 100% Constante")
                     start_time = time.time()
-                    hashes_processed = 0
-                # ------------------------------------
-
+                    total_hashes = 0
+                
                 if found[0] == 1:
                     cl.enqueue_copy(queue, result_nonce, res_buf)
                     nonce = int(result_nonce[0])
                     if Blockchain.valid_proof(last_proof, nonce, difficulty):
-                        print(f"[GPU] 💎 PROVA ENCONTRADA: {nonce}")
+                        print(f"💎 [GPU] SUCESSO! BLOCO ENCONTRADO: {nonce}")
                         result_value.value = nonce
                         stop_event.set()
                         return nonce
                     found[0] = 0
                     cl.enqueue_copy(queue, found_buf, found)
 
-                current_nonce += batch_size
-                if current_nonce > 4000000000: current_nonce = 0
+                current_nonce += (batch_size * loop_intern0)
+                if current_nonce > 4100000000: current_nonce = 0
                 
-                time.sleep(0.001)
-
         except Exception as e:
             print(f"[GPU ERROR] {e}")
             return -1
