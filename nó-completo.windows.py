@@ -69,7 +69,6 @@ for p in cl.get_platforms():
     for d in p.get_devices():
         print("  DEVICE:", d.name, "type:", d.type, "mem:", d.global_mem_size)
         
-# --- KERNEL REAL SHA256 PARA GPU (INJEÇÃO) ---
 OPENCL_KERNEL = """
 #define ROR(x, y) ((x >> y) | (x << (32 - y)))
 #define Ch(x, y, z) (z ^ (x & (y ^ z)))
@@ -169,29 +168,28 @@ class Blockchain:
     TARGET_TIME = 30 # Tempo alvo entre blocos em segundos (10 minutos)
 
     def _calculate_difficulty_for_index(self, target_block_index):
-        # 1. Só muda a cada 10 blocos (Intervalo de Ajuste)
+        """
+        Calcula a dificuldade para manter o valor real.
+        Garante que a moeda não seja 'impressa' rápido demais.
+        """
         if target_block_index % self.ADJUST_INTERVAL != 0:
             return self.chain[-1].get('difficulty', 4)
 
         if len(self.chain) < self.ADJUST_INTERVAL:
-            return 4 # Dificuldade inicial base
-    
-        # 2. Pega o tempo real que levou para minerar os últimos 10 blocos
+            return 4 
+            
         last_block = self.chain[-1]
         first_block = self.chain[-self.ADJUST_INTERVAL]
         actual_time = last_block['timestamp'] - first_block['timestamp']
-        
-        # 3. Quanto tempo o sistema esperava que levasse (10 blocos * 30 seg)
         expected_time = self.ADJUST_INTERVAL * self.TARGET_TIME
 
-        # 4. Cálculo da nova dificuldade baseada no esforço real
-        old_diff = last_block['difficulty']
+        old_diff = last_block.get('difficulty', 4)
         
-        # Fórmula: Nova Dif = Dif Antiga * (Tempo Esperado / Tempo Real)
-        # Se você foi 2x mais rápido que 30s, a dificuldade dobra.
-        new_diff = int(old_diff * (expected_time / actual_time))
+        # Ajuste proporcional: se minerou muito rápido, aumenta a dificuldade
+        # se minerou devagar, diminui.
+        new_diff = int(old_diff * (expected_time / max(1, actual_time)))
 
-        # 5. Segurança: No mínimo 1, no máximo 20 (para não travar sua GTX 1060)
+        # Proteção: no mínimo 1 (fácil), no máximo 20 (seguro para GTX 1060)
         return max(1, min(20, new_diff))
         
     def __init__(self, conn, node_id):
@@ -464,6 +462,7 @@ class Blockchain:
         guess = f"{last_proof}{proof}".encode()
         guess_hash = Blockchain.custom_asic_resistant_hash(guess, proof)
         return guess_hash[:difficulty] == "0" * difficulty
+        
     def _mine_gpu(self, last_proof, difficulty):
         global mining_stop_flag, mining_result
 
@@ -550,35 +549,28 @@ class Blockchain:
             prg = cl.Program(ctx, OPENCL_KERNEL).build()
             kernel = cl.Kernel(prg, "search_block")
 
-            # Buffers
             result_nonce = np.zeros(1, dtype=np.uint32)
             found = np.zeros(1, dtype=np.int32)
             res_buf = cl.Buffer(ctx, cl.mem_flags.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR, hostbuf=found)
 
-            # --- CONFIGURAÇÃO TÉCNICA OTIMIZADA ---
-            batch_size = 10000000 # 10 Milhões de threads
-            loop_intern0 = 2000   # Cada thread faz 2k tentativas
+            batch_size = 10000000 
+            loop_intern0 = 2000   
             current_nonce = 0
             start_time = time.time()
             total_hashes = 0
 
-            print(f"🚀 [GPU] MODO TURBO ATIVO: {device.name}")
-            print(f"📊 [INFO] Carga por ciclo: {(batch_size * loop_intern0)/1e9:.1f} Bilhões de hashes")
+            print(f"🔥 [GPU] MINERAÇÃO SUSTENTÁVEL EM: {device.name}")
 
             while not stop_event.is_set():
-                # Dispara o Kernel
                 kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce))
-                queue.finish() # Trava o Python aqui até a GPU terminar tudo
-                
+                queue.finish() 
                 cl.enqueue_copy(queue, found, found_buf)
     
-                # --- MEDIDOR DE HASH REAL (OPÇÃO C) ---
                 total_hashes += (batch_size * loop_intern0)
-                elapsed = time.time() - start_time
-                if elapsed >= 2.0:
-                    hashrate = total_hashes / elapsed
-                    print(f"🔥 [GPU] Real: {hashrate/1e6:.2f} MH/s | Status: 100% Constante")
+                if time.time() - start_time >= 3.0:
+                    hashrate = total_hashes / (time.time() - start_time)
+                    print(f"⚡ [GPU] Real: {hashrate/1e6:.2f} MH/s | Status: 100% Constante")
                     start_time = time.time()
                     total_hashes = 0
                 
@@ -586,7 +578,7 @@ class Blockchain:
                     cl.enqueue_copy(queue, result_nonce, res_buf)
                     nonce = int(result_nonce[0])
                     if Blockchain.valid_proof(last_proof, nonce, difficulty):
-                        print(f"💎 [GPU] SUCESSO! BLOCO ENCONTRADO: {nonce}")
+                        print(f"💎 [GPU] BLOCO ENCONTRADO: {nonce}")
                         result_value.value = nonce
                         stop_event.set()
                         return nonce
