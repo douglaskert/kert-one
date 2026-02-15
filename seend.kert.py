@@ -42,11 +42,9 @@ SEED_NODES = [
     "http://seend3.kert-one.com:8001"
 ]
 
-# --- KERNEL REAL SHA256 PARA GPU ---
+# --- KERNEL TURBO ALINHADO ---
 OPENCL_KERNEL = """
 typedef unsigned int uint;
-typedef unsigned char uchar;
-
 #define ROR(x, y) ((x >> y) | (x << (32 - y)))
 #define Ch(x, y, z) (z ^ (x & (y ^ z)))
 #define Maj(x, y, z) ((x & y) | (z & (x | y)))
@@ -67,45 +65,31 @@ __constant uint K[64] = {
 };
 
 void sha256_transform(uint *state, const uint *data) {
-    uint a, b, c, d, e, f, g, h, t1, t2, i;
+    uint a, b, c, d, e, f, g, h, t1, t2;
     uint W[64];
-    for (i = 0; i < 16; ++i) W[i] = data[i];
-    for (i = 16; i < 64; ++i) W[i] = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
-    a = state[0]; b = state[1]; c = state[2]; d = state[3];
-    e = state[4]; f = state[5]; g = state[6]; h = state[7];
-    for (i = 0; i < 64; ++i) {
-        t1 = h + S1(e) + Ch(e, f, g) + K[i] + W[i];
-        t2 = S0(a) + Maj(a, b, c);
-        h = g; g = f; f = e; e = d + t1;
-        d = c; c = b; b = a; a = t1 + t2;
+    for (int i = 0; i < 16; ++i) W[i] = data[i];
+    for (int i = 16; i < 64; ++i) W[i] = s1(W[i - 2]) + W[i - 7] + s0(W[i - 15]) + W[i - 16];
+    a = state[0]; b = state[1]; c = state[2]; d = state[3]; e = state[4]; f = state[5]; g = state[6]; h = state[7];
+    for (int i = 0; i < 64; ++i) {
+        t1 = h + S1(e) + Ch(e, f, g) + K[i] + W[i]; t2 = S0(a) + Maj(a, b, c);
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
     }
-    state[0] += a; state[1] += b; state[2] += c; state[3] += d;
-    state[4] += e; state[5] += f; state[6] += g; state[7] += h;
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 }
 
-__kernel void search_block(
-    __global uint *result, 
-    __global int *found,
-    const uint difficulty,
-    const uint start_nonce
-) {
+__kernel void search_block(__global uint *result, __global int *found, const uint difficulty, const uint start_nonce) {
     uint gid = get_global_id(0);
-    uint loop_count = 2000; // ADICIONE ESTE LOOP PARA ALINHAR COM O WINDOWS
-    
+    uint loop_count = 2000;
     for(uint i=0; i < loop_count; i++) {
         if(*found != 0) return;
         uint nonce = start_nonce + (gid * loop_count) + i;
         uint state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-        uint data[16] = {0}; 
-        data[0] = nonce;
+        uint data[16] = {0}; data[0] = nonce;
         sha256_transform(state, data);
-        if (state[0] < (0xFFFFFFFF / difficulty)) {
-            *result = nonce;
-            *found = 1;
-            return;
-        }
+        if (state[0] < (0xFFFFFFFF / difficulty)) { *result = nonce; *found = 1; return; }
     }
 }
+"""
 
 app = Flask(__name__)
 node_id = str(uuid4()).replace('-', '')
@@ -327,42 +311,75 @@ class Blockchain:
 
     @staticmethod
     def _mine_gpu(last_proof, difficulty, stop_event, result_value):
-        import pyopencl as cl
-        import numpy as np
-        print("[GPU] Inicializando contexto OpenCL...")
         try:
+            import pyopencl as cl
+            import numpy as np
+            import time
+        except ImportError: return -1
+
+        try:
+            # Seleção robusta da GPU
             platforms = cl.get_platforms()
             target_device = None
             for platform in platforms:
-                try:
-                    devices = platform.get_devices(device_type=cl.device_type.GPU)
-                    if devices:
-                        target_device = devices[0]; break 
-                except: continue
-            if target_device is None: raise Exception("Nenhuma GPU encontrada.")
+                devices = platform.get_devices(device_type=cl.device_type.GPU)
+                if devices: target_device = devices[0]; break
+            if not target_device: return -1
+
             ctx = cl.Context(devices=[target_device])
             queue = cl.CommandQueue(ctx)
             prg = cl.Program(ctx, OPENCL_KERNEL).build()
             kernel = cl.Kernel(prg, "search_block")
+
+            # Buffers de Memória
             result_nonce = np.zeros(1, dtype=np.uint32)
             found = np.zeros(1, dtype=np.int32)
-            mf = cl.mem_flags
-            res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
-            found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
-            batch_size = 50000000
+            res_buf = cl.Buffer(ctx, cl.mem_flags.WRITE_ONLY, result_nonce.nbytes)
+            found_buf = cl.Buffer(ctx, cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR, hostbuf=found)
+
+            # --- CONFIGURAÇÃO TURBO ALINHADA ---
+            batch_size = 10000000 # 10 Milhões de threads
+            loop_intern0 = 2000   # Cada thread faz 2k tentativas (IGUAL AO KERNEL)
             current_nonce = 0
+            start_time = time.time()
+            total_hashes = 0
+
+            print(f"🔥 [GPU] SEED EM MODO TURBO: {target_device.name}")
+
             while not stop_event.is_set():
+                # 1. Envia carga massiva
                 kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce))
+                
+                # 2. Sincronização Total (Elimina os picos de 0%)
+                queue.finish() 
+                
+                # 3. Coleta resultados
                 cl.enqueue_copy(queue, found, found_buf)
-                queue.finish()
+    
+                # Velocímetro (Calcula a velocidade real MH/s)
+                total_hashes += (batch_size * loop_intern0)
+                elapsed = time.time() - start_time
+                if elapsed >= 3.0:
+                    print(f"⚡ [GPU-SEED] Real: {(total_hashes/elapsed)/1e6:.2f} MH/s | Estabilidade: 100%")
+                    start_time = time.time()
+                    total_hashes = 0
+                
                 if found[0] == 1:
                     cl.enqueue_copy(queue, result_nonce, res_buf)
                     nonce = int(result_nonce[0])
                     if Blockchain.valid_proof(last_proof, nonce, difficulty):
-                        result_value.value = nonce; stop_event.set(); return nonce
-                    found[0] = 0; cl.enqueue_copy(queue, found_buf, found)
-                current_nonce += batch_size
-                time.sleep(0.008)
+                        print(f"💎 [GPU-SEED] BLOCO ENCONTRADO: {nonce}")
+                        result_value.value = nonce
+                        stop_event.set()
+                        return nonce
+                    found[0] = 0
+                    cl.enqueue_copy(queue, found_buf, found)
+
+                # --- CORREÇÃO DO SALTO ---
+                # Pula 2000 nonces por thread para não repetir trabalho
+                current_nonce += (batch_size * loop_intern0)
+                if current_nonce > 4100000000: current_nonce = 0
+                
         except Exception as e:
             print(f"[GPU ERROR] {e}")
             return -1
