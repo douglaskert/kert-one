@@ -75,7 +75,7 @@ OPENCL_KERNEL = """
 #define Maj(x, y, z) ((x & y) | (z & (x | y)))
 #define S0(x) (ROR(x, 2) ^ ROR(x, 13) ^ ROR(x, 22))
 #define S1(x) (ROR(x, 6) ^ ROR(x, 11) ^ ROR(x, 25))
-#define s0(x) (ROR(x, 7) ^ ROR(x, 18) ^ (x >> 3))
+#define s0(x) (ROR(x, 7) ^ ROR(x, 18) ^ (x >> 3)) 
 #define s1(x) (ROR(x, 17) ^ ROR(x, 19) ^ (x >> 10))
 
 __constant unsigned int K[64] = {
@@ -533,6 +533,8 @@ class Blockchain:
     
     @staticmethod
     def _mine_gpu(last_proof, difficulty, stop_event, result_value):
+        global current_hashrate_global
+        
         try:
             import pyopencl as cl
             import numpy as np
@@ -540,6 +542,7 @@ class Blockchain:
         except ImportError: return -1
 
         try:
+            # Seleção de Hardware
             platforms = cl.get_platforms()
             target_platform = next((p for p in platforms if "nvidia" in p.name.lower()), platforms[0])
             device = target_platform.get_devices(device_type=cl.device_type.GPU)[0]
@@ -549,18 +552,20 @@ class Blockchain:
             prg = cl.Program(ctx, OPENCL_KERNEL).build()
             kernel = cl.Kernel(prg, "search_block")
 
+            # Configuração de Buffers
             result_nonce = np.zeros(1, dtype=np.uint32)
             found = np.zeros(1, dtype=np.int32)
             res_buf = cl.Buffer(ctx, cl.mem_flags.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR, hostbuf=found)
 
-            batch_size = 10000000 
+            # Inicialização das Variáveis (CORREÇÃO DO ERRO)
+            batch_size = 2100000 
             loop_intern0 = 2000   
             current_nonce = 0
             start_time = time.time()
             total_hashes = 0
 
-            print(f"🔥 [GPU] MINERAÇÃO SUSTENTÁVEL EM: {device.name}")
+            print(f"🔥 [GPU] ENGINE KERT-ONE ATIVA: {device.name}")
 
             while not stop_event.is_set():
                 kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce))
@@ -568,28 +573,39 @@ class Blockchain:
                 cl.enqueue_copy(queue, found, found_buf)
     
                 total_hashes += (batch_size * loop_intern0)
-                if time.time() - start_time >= 3.0:
-                    hashrate = total_hashes / (time.time() - start_time)
-                    print(f"⚡ [GPU] Real: {hashrate/1e6:.2f} MH/s | Status: 100% Constante")
-                    start_time = time.time()
+                
+                # Atualização do Dashboard a cada 3 segundos
+                now = time.time()
+                if now - start_time >= 3.0:
+                    current_hashrate_global = (total_hashes / (now - start_time)) / 1e6
+                    print(f"⚡ [GPU] Speed: {current_hashrate_global:.2f} MH/s")
+                    start_time = now
                     total_hashes = 0
                 
                 if found[0] == 1:
                     cl.enqueue_copy(queue, result_nonce, res_buf)
                     nonce = int(result_nonce[0])
+                    
+                    # Atualiza o hashrate uma última vez antes de fechar para o Dashboard não zerar
+                    duration = max(0.001, time.time() - start_time)
+                    current_hashrate_global = (total_hashes / duration) / 1e6
+                    
                     if Blockchain.valid_proof(last_proof, nonce, difficulty):
                         print(f"💎 [GPU] BLOCO ENCONTRADO: {nonce}")
                         result_value.value = nonce
                         stop_event.set()
                         return nonce
+                    
                     found[0] = 0
                     cl.enqueue_copy(queue, found_buf, found)
 
                 current_nonce += (batch_size * loop_intern0)
-                if current_nonce > 4100000000: current_nonce = 0
+                if current_nonce > 4100000000: 
+                    current_nonce = 0
                 
         except Exception as e:
             print(f"[GPU ERROR] {e}")
+            current_hashrate_global = 0.0
             return -1
         return -1
         
@@ -1580,6 +1596,25 @@ def comparar_ultimos_blocos(blockchain_instance):
                 known_nodes.discard(peer)
                 salvar_peers(known_nodes)
 
+# Variável global para o Dashboard ler
+current_hashrate_global = 0.0
+
+@app.route('/dashboard')
+def dashboard_visual():
+    # Isso envia o HTML moderno diretamente para o seu navegador
+    return render_template('dashboard.html')
+    
+@app.route('/api/stats')
+def get_stats():
+    last_block = blockchain.last_block()
+    return jsonify({
+        "hashrate": f"{current_hashrate_global:.2f}",
+        "index": last_block['index'],
+        "difficulty": last_block['difficulty'],
+        "status": "Mining" if mining_active else "Idle",
+        "gpu": "GTX 1060 100% Cuda"
+    })
+    
 def _continuous_mine():
     global mining_active, blockchain, miner_address_global, mining_stop_flag
 
