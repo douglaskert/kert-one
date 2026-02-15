@@ -28,10 +28,15 @@ try:
     import pyopencl as cl
     import numpy as np
     HAS_GPU = True
-except ImportError:
+    # Teste rápido para ver se detecta a placa
+    platforms = cl.get_platforms()
+    if not platforms:
+        raise Exception("Nenhuma plataforma OpenCL encontrada (Instale drivers Nvidia)")
+    print(f"[SISTEMA] OpenCL Detectado: {platforms[0].name}")
+except Exception as e:
     HAS_GPU = False
-    print("[SISTEMA] PyOpenCL ou Numpy não instalados. Mineração GPU desativada (Usando CPU).")
-
+    print(f"\n[ERRO CRÍTICO GPU] Falha ao carregar OpenCL: {e}")
+    print("[SISTEMA] Ativando modo de segurança (CPU)...")
 # Importações PyQt5
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QTextEdit, 
                              QVBoxLayout, QWidget, QLabel, QLineEdit, QFormLayout, 
@@ -493,7 +498,7 @@ class Blockchain:
             res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
 
-            batch_size = 50000000  # ou mais, depende da GPU
+            batch_size = 150000000  # ou mais, depende da GPU
             current_nonce = 0
 
             while not mining_stop_flag.is_set():
@@ -534,7 +539,7 @@ class Blockchain:
                 current_nonce += batch_size
 
                 # Throttle para ~80%
-                time.sleep(0.008)
+                time.sleep(0.002)
 
         except Exception as e:
             print(f"[GPU ERROR] {e}. Fallback CPU.")
@@ -545,21 +550,27 @@ class Blockchain:
     @staticmethod
     def _mine_gpu(last_proof, difficulty, stop_event, result_value):
         # Importação local para garantir que o processo filho tenha as libs
-        import pyopencl as cl
-        import numpy as np
+        try:
+            import pyopencl as cl
+            import numpy as np
+        except ImportError:
+            print("[GPU ERROR] PyOpenCL não instalado.")
+            return -1
 
         print("[GPU] Inicializando contexto OpenCL no processo filho...")
 
         try:
-            # 1. REDETECTAR A GPU (Necessário no Windows)
+            # 1. REDETECTAR A GPU E A PLATAFORMA (Crítico para Windows)
             platforms = cl.get_platforms()
             target_device = None
+            target_platform = None
             
             for platform in platforms:
                 try:
                     devices = platform.get_devices(device_type=cl.device_type.GPU)
                     if devices:
                         target_device = devices[0]
+                        target_platform = platform # Salva a plataforma correta
                         break 
                 except Exception:
                     continue
@@ -567,17 +578,18 @@ class Blockchain:
             if target_device is None:
                 raise Exception("Nenhuma GPU encontrada no subprocesso.")
 
-            # 2. CRIAR CONTEXTO E FILA
-            ctx = cl.Context(devices=[target_device])
+            # 2. CRIAR CONTEXTO COM PROPRIEDADES (Correção de estabilidade)
+            # No Windows, é obrigatório vincular o dispositivo à plataforma correta
+            ctx_props = [(cl.context_properties.PLATFORM, target_platform)]
+            ctx = cl.Context(devices=[target_device], properties=ctx_props)
             queue = cl.CommandQueue(ctx)
             
             # 3. COMPILAR O PROGRAMA
+            # OPENCL_KERNEL deve estar definido globalmente no arquivo
             prg = cl.Program(ctx, OPENCL_KERNEL).build()
             
-            # --- CORREÇÃO DO AVISO "RepeatedKernelRetrieval" ---
             # Instanciamos o kernel UMA VEZ fora do loop
             kernel = cl.Kernel(prg, "search_block")
-            # ---------------------------------------------------
 
             # Buffers
             result_nonce = np.zeros(1, dtype=np.uint32)
@@ -587,13 +599,17 @@ class Blockchain:
             res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
 
-            batch_size = 50000000  # ou mais, depende da GPU
+            # --- CONFIGURAÇÃO DE POTÊNCIA (GTX 1060 6GB) ---
+            batch_size = 150000000  # Carga alta para memória de 6GB
             current_nonce = 0
 
             # Loop de Mineração
             while not stop_event.is_set():
+                
+                # Verifica se o bloco mudou externamente (opcional, mas bom)
+                # if result_value.value != -1: return -1
 
-                # Executa o kernel usando o objeto já criado
+                # Executa o kernel
                 kernel(
                     queue,
                     (batch_size,),
@@ -604,6 +620,7 @@ class Blockchain:
                     np.uint32(current_nonce)
                 )
 
+                # Lê o resultado
                 cl.enqueue_copy(queue, found, found_buf)
                 queue.finish()
     
@@ -612,6 +629,7 @@ class Blockchain:
                     nonce = int(result_nonce[0])
 
                     # Validação final no Python
+                    # Nota: Blockchain.valid_proof deve ser acessível aqui
                     if Blockchain.valid_proof(last_proof, nonce, difficulty):
                         print(f"[GPU] 🚀 PROVA ENCONTRADA: {nonce}")
                         result_value.value = nonce
@@ -624,11 +642,19 @@ class Blockchain:
 
                 current_nonce += batch_size
                 
-                # Pequena pausa para evitar travamento total do PC
-                time.sleep(0.008)
+                # Proteção contra overflow de 32bits (reinicia nonce se ficar gigante)
+                if current_nonce > 4000000000:
+                    current_nonce = 0
+                
+                # --- CONTROLE DE CARGA ---
+                # 0.001 = Uso muito alto (~90-100%)
+                # 0.005 = Uso alto (~70-80%)
+                time.sleep(0.002)
 
         except Exception as e:
             print(f"[GPU ERROR] {e}. (A CPU assumirá se configurada)")
+            import traceback
+            traceback.print_exc() # Imprime o erro real para ajudar no debug
             return -1
 
         return -1
@@ -2034,18 +2060,21 @@ class KertOneCoreClient(QMainWindow):
         self.radio_cpu = QRadioButton("CPU (Multicore)")
         self.radio_gpu = QRadioButton("GPU (OpenCL Real)")
         
+        # --- CORREÇÃO CRÍTICA: Conectar os sinais ANTES de marcar a caixa ---
+        # Isso garante que, ao definirmos setChecked(True) abaixo, o backend seja avisado imediatamente.
+        self.radio_cpu.toggled.connect(lambda: self.update_mining_mode("CPU"))
+        self.radio_gpu.toggled.connect(lambda: self.update_mining_mode("GPU"))
+
         # Lógica de ativação dos botões
         if HAS_GPU:
-            self.radio_gpu.setChecked(True)
+            self.radio_gpu.setEnabled(True)
             self.radio_gpu.setText("GPU (OpenCL Real - DETECTADA)")
+            # Agora sim: Ao marcar True, o sinal acima dispara e envia o POST para o servidor!
+            self.radio_gpu.setChecked(True) 
         else:
             self.radio_cpu.setChecked(True)
             self.radio_gpu.setEnabled(False) # Desativa se não tiver drivers
             self.radio_gpu.setText("GPU (Drivers não encontrados)")
-
-        # Conectar sinais para enviar configuração ao backend
-        self.radio_cpu.toggled.connect(lambda: self.update_mining_mode("CPU"))
-        self.radio_gpu.toggled.connect(lambda: self.update_mining_mode("GPU"))
 
         hw_layout.addWidget(self.radio_cpu)
         hw_layout.addWidget(self.radio_gpu)
