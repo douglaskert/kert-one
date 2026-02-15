@@ -77,16 +77,24 @@ void sha256_transform(uint *state, const uint *data) {
     state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 }
 
-__kernel void search_block(__global uint *result, __global int *found, const uint difficulty, const uint start_nonce) {
-    uint gid = get_global_id(0);
-    uint loop_count = 2000;
-    for(uint i=0; i < loop_count; i++) {
+__kernel void search_block(__global unsigned int *result, __global int *found, const unsigned int difficulty, const unsigned int start_nonce) {
+    unsigned int gid = get_global_id(0);
+    unsigned int loop_count = 2000;
+    for(unsigned int i=0; i < loop_count; i++) {
         if(*found != 0) return;
-        uint nonce = start_nonce + (gid * loop_count) + i;
-        uint state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-        uint data[16] = {0}; data[0] = nonce;
+        unsigned int nonce = start_nonce + (gid * loop_count) + i;
+        unsigned int state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+        unsigned int data[16] = {0}; 
+        data[0] = nonce;
         sha256_transform(state, data);
-        if (state[0] < (0xFFFFFFFF / difficulty)) { *result = nonce; *found = 1; return; }
+        
+        // --- LINHA CORRIGIDA ABAIXO ---
+        // Garante que só pare se tiver os zeros EXATOS (Hex "0000" para Dif 4)
+        if (state[0] <= (0xFFFFFFFF >> (difficulty * 4))) {
+            *result = nonce;
+            *found = 1;
+            return;
+        }
     }
 }
 """
