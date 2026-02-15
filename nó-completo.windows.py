@@ -549,10 +549,10 @@ class Blockchain:
     
     @staticmethod
     def _mine_gpu(last_proof, difficulty, stop_event, result_value):
-        # Importação local para garantir que o processo filho tenha as libs
         try:
             import pyopencl as cl
             import numpy as np
+            import time # <--- Necessário para calcular o tempo
         except ImportError:
             print("[GPU ERROR] PyOpenCL não instalado.")
             return -1
@@ -560,103 +560,73 @@ class Blockchain:
         print("[GPU] Inicializando contexto OpenCL no processo filho...")
 
         try:
-            # 1. REDETECTAR A GPU E A PLATAFORMA (Crítico para Windows)
             platforms = cl.get_platforms()
-            target_device = None
-            target_platform = None
-            
-            for platform in platforms:
-                try:
-                    devices = platform.get_devices(device_type=cl.device_type.GPU)
-                    if devices:
-                        target_device = devices[0]
-                        target_platform = platform # Salva a plataforma correta
-                        break 
-                except Exception:
-                    continue
-            
-            if target_device is None:
-                raise Exception("Nenhuma GPU encontrada no subprocesso.")
+            if not platforms: raise Exception("Nenhuma plataforma encontrada")
+            target_platform = platforms[0]
+            devices = target_platform.get_devices(device_type=cl.device_type.GPU)
+            if not devices: raise Exception("Nenhuma GPU encontrada")
+            target_device = devices[0]
 
-            # 2. CRIAR CONTEXTO COM PROPRIEDADES (Correção de estabilidade)
-            # No Windows, é obrigatório vincular o dispositivo à plataforma correta
             ctx_props = [(cl.context_properties.PLATFORM, target_platform)]
             ctx = cl.Context(devices=[target_device], properties=ctx_props)
             queue = cl.CommandQueue(ctx)
-            
-            # 3. COMPILAR O PROGRAMA
-            # OPENCL_KERNEL deve estar definido globalmente no arquivo
             prg = cl.Program(ctx, OPENCL_KERNEL).build()
-            
-            # Instanciamos o kernel UMA VEZ fora do loop
             kernel = cl.Kernel(prg, "search_block")
 
-            # Buffers
             result_nonce = np.zeros(1, dtype=np.uint32)
             found = np.zeros(1, dtype=np.int32)
             mf = cl.mem_flags
-
             res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
 
-            # --- CONFIGURAÇÃO DE POTÊNCIA (GTX 1060 6GB) ---
-            batch_size = 150000000  # Carga alta para memória de 6GB
+            # Ajuste de potência
+            batch_size = 150000000 
             current_nonce = 0
+            
+            # Variáveis para calcular velocidade
+            start_time = time.time()
+            hashes_processed = 0
 
-            # Loop de Mineração
             while not stop_event.is_set():
                 
-                # Verifica se o bloco mudou externamente (opcional, mas bom)
-                # if result_value.value != -1: return -1
-
-                # Executa o kernel
-                kernel(
-                    queue,
-                    (batch_size,),
-                    None,
-                    res_buf,
-                    found_buf,
-                    np.uint32(difficulty),
-                    np.uint32(current_nonce)
-                )
-
-                # Lê o resultado
+                # Executa
+                kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce))
+                
+                # Lê resultado
                 cl.enqueue_copy(queue, found, found_buf)
                 queue.finish()
     
+                # --- CÁLCULO DE VELOCIDADE (NOVO) ---
+                hashes_processed += batch_size
+                elapsed = time.time() - start_time
+                if elapsed >= 2.0: # Mostra a cada 2 segundos
+                    hashrate = hashes_processed / elapsed
+                    # Mostra em MH/s (Milhões de Hashes por segundo)
+                    print(f"🚀 [GPU] Velocidade: {hashrate/1000000:.2f} MH/s | Nonce: {current_nonce}")
+                    # Reseta o cronômetro
+                    start_time = time.time()
+                    hashes_processed = 0
+                # ------------------------------------
+
                 if found[0] == 1:
                     cl.enqueue_copy(queue, result_nonce, res_buf)
                     nonce = int(result_nonce[0])
-
-                    # Validação final no Python
-                    # Nota: Blockchain.valid_proof deve ser acessível aqui
                     if Blockchain.valid_proof(last_proof, nonce, difficulty):
-                        print(f"[GPU] 🚀 PROVA ENCONTRADA: {nonce}")
+                        print(f"[GPU] 💎 PROVA ENCONTRADA: {nonce}")
                         result_value.value = nonce
                         stop_event.set()
                         return nonce
-
-                    # Falso positivo (colisão rara), reseta e continua
                     found[0] = 0
                     cl.enqueue_copy(queue, found_buf, found)
 
                 current_nonce += batch_size
+                if current_nonce > 4000000000: current_nonce = 0
                 
-                # Proteção contra overflow de 32bits (reinicia nonce se ficar gigante)
-                if current_nonce > 4000000000:
-                    current_nonce = 0
-                
-                # --- CONTROLE DE CARGA ---
-                # 0.001 = Uso muito alto (~90-100%)
-                # 0.005 = Uso alto (~70-80%)
-                time.sleep(0.002)
+                time.sleep(0.001)
 
         except Exception as e:
-            print(f"[GPU ERROR] {e}. (A CPU assumirá se configurada)")
-            import traceback
-            traceback.print_exc() # Imprime o erro real para ajudar no debug
+            print(f"[GPU ERROR] {e}")
             return -1
-
         return -1
         
     @staticmethod
