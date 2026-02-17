@@ -13,8 +13,12 @@ import ipaddress
 import sys
 from ecdsa import SigningKey, VerifyingKey, SECP256k1, BadSignatureError
 import multiprocessing
+import urllib3
 
-# --- DEFINIÇÃO DE DIRETÓRIO BASE (CRÍTICO PARA LINUX) ---
+# Desativa avisos de SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# --- DEFINIÇÃO DE DIRETÓRIO BASE ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- INJEÇÃO DE MINERAÇÃO REAL (GPU/CPU) ---
@@ -38,7 +42,6 @@ WALLET_FILE = "server_wallet.json"
 # --- NÓS SEMENTES (SEED NODES) ---
 SEED_NODES = [
     "https://seend.kert-one.com",
-    "https://seend2.kert-one.com",
     "http://seend3.kert-one.com:8001"
 ]
 
@@ -88,8 +91,6 @@ __kernel void search_block(__global unsigned int *result, __global int *found, c
         data[0] = nonce;
         sha256_transform(state, data);
         
-        // --- LINHA CORRIGIDA ABAIXO ---
-        // Garante que só pare se tiver os zeros EXATOS (Hex "0000" para Dif 4)
         if (state[0] <= (0xFFFFFFFF >> (difficulty * 4))) {
             *result = nonce;
             *found = 1;
@@ -104,8 +105,12 @@ node_id = str(uuid4()).replace('-', '')
 
 # --- Funções de Persistência de Peers ---
 def salvar_peers(peers):
-    with open(PEERS_FILE, 'w') as f:
-        json.dump(list(peers), f)
+    try:
+        with open(PEERS_FILE, 'w') as f:
+            json.dump(list(peers), f)
+        print(f"[P2P] Arquivo {PEERS_FILE} salvo.")
+    except Exception as e:
+        print(f"[ERRO] Falha ao salvar peers: {e}")
 
 def carregar_peers():
     if not os.path.exists(PEERS_FILE):
@@ -132,16 +137,12 @@ mining_result = multiprocessing.Value('i', -1)
 
 @app.route('/coin/value', methods=['GET'])
 def coin_value_api():
-    # Pega o valor real matemático do último bloco
     if not blockchain.chain:
         price = 500.0
     else:
         last_block = blockchain.last_block()
         price = float(last_block.get('protocol_value', 0.0))
 
-    # Lógica de Exibição: 
-    # Se o valor matemático for menor que o piso (500), somamos para visualização
-    # Isso garante que a moeda nunca pareça valer "0"
     if price < 500.0:
         display_price = 500.0 + price
     else:
@@ -149,8 +150,8 @@ def coin_value_api():
 
     return jsonify({
         "coin": COIN_SYMBOL,
-        "protocol_value": price,             # Valor real do banco de dados
-        "protocol_value_display": f"{display_price:.2f}", # Valor para exibir na tela
+        "protocol_value": price,
+        "protocol_value_display": f"{display_price:.2f}",
         "unit": "USD"
     }), 200
     
@@ -160,29 +161,21 @@ class Blockchain:
     TARGET_TIME = 30
 
     def _calculate_difficulty_for_index(self, target_block_index):
-        # 1. Só muda a cada 10 blocos (Intervalo de Ajuste)
         if target_block_index % self.ADJUST_INTERVAL != 0:
             return self.chain[-1].get('difficulty', 4)
 
         if len(self.chain) < self.ADJUST_INTERVAL:
-            return 4 # Dificuldade inicial base
+            return 4
     
-        # 2. Pega o tempo real que levou para minerar os últimos 10 blocos
         last_block = self.chain[-1]
         first_block = self.chain[-self.ADJUST_INTERVAL]
         actual_time = last_block['timestamp'] - first_block['timestamp']
         
-        # 3. Quanto tempo o sistema esperava que levasse (10 blocos * 30 seg)
         expected_time = self.ADJUST_INTERVAL * self.TARGET_TIME
-
-        # 4. Cálculo da nova dificuldade baseada no esforço real
         old_diff = last_block['difficulty']
         
-        # Fórmula: Nova Dif = Dif Antiga * (Tempo Esperado / Tempo Real)
-        # Se você foi 2x mais rápido que 30s, a dificuldade dobra.
+        if actual_time <= 0: actual_time = 1
         new_diff = int(old_diff * (expected_time / actual_time))
-
-        # 5. Segurança: No mínimo 1, no máximo 20 (para não travar sua GTX 1060)
         return max(1, min(20, new_diff))
         
     def __init__(self, conn, node_id):
@@ -192,7 +185,7 @@ class Blockchain:
         self.chain = self._load_chain()
         self.current_transactions = []
         if not self.chain:
-            print("[BOOT] 📡 Inserindo Gênese Base 500.0...")
+            print("[BOOT] 📡 Inserindo Gênese Base...")
             genesis_block = {
                 'index': 1, 'previous_hash': '1', 'proof': 100,
                 'timestamp': 1700000000.0, 'miner': 'genesis',
@@ -212,6 +205,7 @@ class Blockchain:
             "protocol_value": block.get("protocol_value", 0),
             "transactions": block["transactions"]
         }
+        # Garante ordenação consistente
         block_string = json.dumps(block_core, sort_keys=True, separators=(',', ':')).encode()
         return hashlib.sha256(block_string).hexdigest()
 
@@ -326,51 +320,36 @@ class Blockchain:
         except ImportError: return -1
 
         try:
-            # Seleção robusta da GPU
             platforms = cl.get_platforms()
-            target_device = None
-            for platform in platforms:
-                devices = platform.get_devices(device_type=cl.device_type.GPU)
-                if devices: target_device = devices[0]; break
-            if not target_device: return -1
-
+            if not platforms: return -1
+            target_device = platforms[0].get_devices(device_type=cl.device_type.GPU)[0]
+            
             ctx = cl.Context(devices=[target_device])
             queue = cl.CommandQueue(ctx)
             prg = cl.Program(ctx, OPENCL_KERNEL).build()
             kernel = cl.Kernel(prg, "search_block")
 
-            # Buffers de Memória
             result_nonce = np.zeros(1, dtype=np.uint32)
             found = np.zeros(1, dtype=np.int32)
             res_buf = cl.Buffer(ctx, cl.mem_flags.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR, hostbuf=found)
 
-            # --- CONFIGURAÇÃO TURBO ALINHADA ---
-            batch_size = 10000000 # 10 Milhões de threads
-            loop_intern0 = 2000   # Cada thread faz 2k tentativas (IGUAL AO KERNEL)
+            batch_size = 500000
+            loop_intern0 = 2000   
             current_nonce = 0
-            start_time = time.time()
-            total_hashes = 0
-
-            print(f"🔥 [GPU] SEED EM MODO TURBO: {target_device.name}")
+            
+            print(f"🔥 [GPU] SEED ATIVO: {target_device.name}")
 
             while not stop_event.is_set():
-                # 1. Envia carga massiva
+                iter_start = time.time()
                 kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce))
-                
-                # 2. Sincronização Total (Elimina os picos de 0%)
                 queue.finish() 
                 
-                # 3. Coleta resultados
+                if (time.time() - iter_start) < 0.001:
+                    print("[GPU] Erro de driver detectado. Reiniciando worker.")
+                    return -1
+
                 cl.enqueue_copy(queue, found, found_buf)
-    
-                # Velocímetro (Calcula a velocidade real MH/s)
-                total_hashes += (batch_size * loop_intern0)
-                elapsed = time.time() - start_time
-                if elapsed >= 3.0:
-                    print(f"⚡ [GPU-SEED] Real: {(total_hashes/elapsed)/1e6:.2f} MH/s | Estabilidade: 100%")
-                    start_time = time.time()
-                    total_hashes = 0
                 
                 if found[0] == 1:
                     cl.enqueue_copy(queue, result_nonce, res_buf)
@@ -383,10 +362,8 @@ class Blockchain:
                     found[0] = 0
                     cl.enqueue_copy(queue, found_buf, found)
 
-                # --- CORREÇÃO DO SALTO ---
-                # Pula 2000 nonces por thread para não repetir trabalho
                 current_nonce += (batch_size * loop_intern0)
-                if current_nonce > 4100000000: current_nonce = 0
+                if current_nonce > 4000000000: current_nonce = 0
                 
         except Exception as e:
             print(f"[GPU ERROR] {e}")
@@ -398,41 +375,77 @@ class Blockchain:
         c.execute("SELECT 1 FROM txs WHERE id=?", (tx_id,))
         return c.fetchone() is not None
 
-    def valid_chain(self, chain):
+    # --- CORREÇÃO CRÍTICA PARA ACEITAR BLOCOS ANTIGOS (MODO BLIND SYNC) ---
+    def valid_chain(self, chain, check_strict=True):
         if not chain: return False
         if chain[0]['index'] != 1 or chain[0]['previous_hash'] != '1': return False
         for idx in range(1, len(chain)):
             prev = chain[idx - 1]
             curr = chain[idx]
-            if curr['previous_hash'] != self.hash(prev): return False
-            if not self.valid_proof(prev['proof'], curr['proof'], curr.get('difficulty', DIFFICULTY)): return False
+            
+            # Se for checagem estrita (padrão), valida hash e PoW
+            if check_strict:
+                if curr['previous_hash'] != self.hash(prev):
+                    print(f"[SYNC ERROR] Hash inválido no bloco {curr['index']}.")
+                    return False
+                if not self.valid_proof(prev['proof'], curr['proof'], curr.get('difficulty', DIFFICULTY)):
+                    print(f"[SYNC ERROR] Prova inválida no bloco {curr['index']}.")
+                    return False
+            else:
+                # Se for MODO CÓPIA (check_strict=False), confia e só verifica a sequência
+                if curr['index'] != prev['index'] + 1:
+                    return False
+                    
         return True
 
     def get_total_difficulty(self, chain_to_check):
         return sum([block.get('difficulty', DIFFICULTY) for block in chain_to_check])
 
     def resolve_conflicts(self):
-        neighbors = list(known_nodes)
+        # GARANTE que estamos lendo os peers do arquivo + memória
+        current_peers = known_nodes.union(set(carregar_peers()))
+        neighbors = list(current_peers)
         new_chain = None
         max_difficulty = self.get_total_difficulty(self.chain)
+        
+        # --- DETECÇÃO DE BOOTSTRAP (Se eu sou novo, ativo o modo 'Confia no Pai') ---
+        # Se eu só tenho o Genesis, eu NÃO valido hashes antigos, eu só baixo.
+        is_fresh_install = (len(self.chain) <= 1)
+        if is_fresh_install:
+            print("[BOOT] 🐇 MODO CÓPIA CEGA ATIVADO: Baixando chain sem validar hashes antigos...")
+
+        print(f"[SYNC] Verificando {len(neighbors)} peers...")
+        
         for node_url in neighbors:
             if node_url == meu_url: continue
             try:
-                response = requests.get(f"{node_url}/chain", timeout=15)
+                print(f"   -> Conectando a {node_url}...")
+                response = requests.get(f"{node_url}/chain", timeout=60, verify=False)
                 if response.status_code == 200:
                     data = response.json()
                     peer_chain = data.get("chain")
                     if not peer_chain: continue
+                    
                     peer_difficulty = self.get_total_difficulty(peer_chain)
-                    if peer_difficulty > max_difficulty and self.valid_chain(peer_chain):
-                        max_difficulty = peer_difficulty
-                        new_chain = peer_chain
-            except: pass
+                    print(f"      [INFO] Peer Dif: {peer_difficulty} | Local Dif: {max_difficulty}")
+                    
+                    if peer_difficulty > max_difficulty:
+                        # O PULO DO GATO: Se for instalação nova, passa check_strict=False
+                        if self.valid_chain(peer_chain, check_strict=not is_fresh_install):
+                            max_difficulty = peer_difficulty
+                            new_chain = peer_chain
+                            print("      [UPGRADE] Nova chain aceita e baixada!")
+                        else:
+                            print("      [REJECT] Chain rejeitada (Inválida).")
+            except Exception as e:
+                print(f"      [OFFLINE] {node_url}: {e}")
+                
         if new_chain:
             self.chain = new_chain
             self._rebuild_db_from_chain()
-            print(f"[CONSENSO] ✅ Sincronizado. Blocos: {len(self.chain)}")
+            print(f"[CONSENSO] ✅ Sincronizado com sucesso! Total Blocos: {len(self.chain)}")
             return True
+        print("[CONSENSO] Mantendo cadeia local.")
         return False
 
     def _rebuild_db_from_chain(self):
@@ -480,9 +493,10 @@ def register_nodes_api():
     if new_node_url == meu_url: return jsonify({"message": "Self ignored"}), 200
     
     if new_node_url not in known_nodes:
-        known_nodes.add(new_node_url); salvar_peers(known_nodes)
-        print(f"[P2P] Novo peer: {new_node_url}")
-        try: requests.post(f"{new_node_url}/nodes/register", json={"url": meu_url}, timeout=5)
+        known_nodes.add(new_node_url)
+        salvar_peers(known_nodes) 
+        print(f"[P2P] Novo peer registrado: {new_node_url}")
+        try: requests.post(f"{new_node_url}/nodes/register", json={"url": meu_url}, timeout=5, verify=False)
         except: pass
     return jsonify({"message": "Registrado", "known_peers": list(known_nodes)}), 200
 
@@ -514,7 +528,6 @@ def new_transaction_api():
             'timestamp': values.get('timestamp', time.time())
         }
         
-        # Validacao de Assinatura
         vk = VerifyingKey.from_string(bytes.fromhex(values['public_key']), curve=SECP256k1)
         msg_data = {'amount': amount_fmt, 'fee': fee_fmt, 'recipient': values['recipient'], 'sender': values['sender']}
         message = json.dumps(msg_data, sort_keys=True, separators=(',', ':')).encode('utf-8')
@@ -532,14 +545,13 @@ def new_transaction_api():
 def broadcast_tx_to_peers(tx):
     for peer in known_nodes.copy():
         if peer == meu_url: continue
-        try: requests.post(f"{peer}/tx/receive", json=tx, timeout=3)
+        try: requests.post(f"{peer}/tx/receive", json=tx, timeout=3, verify=False)
         except: pass
 
 @app.route('/tx/receive', methods=['POST'])
 def receive_transaction_api():
     tx_data = request.get_json()
     if not tx_data: return jsonify({'message': 'No data'}), 400
-    # Simplificado: Assume validacao basica ja feita ou sera feita na mineracao
     blockchain.current_transactions.append(tx_data)
     return jsonify({'message': 'TX Recebida'}), 200
 
@@ -553,7 +565,6 @@ def receive_block_api():
     if blockchain.valid_proof(last_block['proof'], block_data['proof'], block_data['difficulty']):
          blockchain.chain.append(block_data)
          blockchain._save_block(block_data)
-         # Remove TXs mineradas
          mined_ids = {t['id'] for t in block_data['transactions']}
          blockchain.current_transactions = [tx for tx in blockchain.current_transactions if tx['id'] not in mined_ids]
          return jsonify({'message': 'Bloco aceito'}), 200
@@ -584,10 +595,9 @@ def mine_api():
         proof = -1
         mining_stop_flag.clear(); mining_result.value = -1
         
-        # Tenta GPU se disponivel, senao CPU
         if HAS_GPU:
              proof = Blockchain._mine_gpu(last_block['proof'], blockchain._calculate_difficulty_for_index(len(blockchain.chain)+1), mining_stop_flag, mining_result)
-        if proof == -1: # Fallback CPU ou se GPU falhou
+        if proof == -1: 
              proof = blockchain.proof_of_work(last_block['proof'])
              
         if proof != -1:
@@ -601,42 +611,28 @@ def mine_api():
 def broadcast_block(block):
     for peer in known_nodes | set(SEED_NODES):
         if peer == meu_url: continue
-        try: requests.post(f"{peer}/blocks/receive", json=block, timeout=5)
+        try: requests.post(f"{peer}/blocks/receive", json=block, timeout=5, verify=False)
         except: pass
 
-# --- ROTAS PWA E FRONTEND CORRIGIDAS ---
-
-# 1️⃣ Rota para o Cartão/Banco
+# --- ROTAS PWA E FRONTEND ---
 @app.route('/card')
 def card_web():
-    try:
-        return render_template('card.html')
-    except Exception as e:
-        return f"Erro ao carregar card.html: {e}", 500
+    try: return render_template('card.html')
+    except Exception as e: return f"Erro: {e}", 500
 
-# 2️⃣ Rota do Manifest (PWA)
 @app.route('/manifest.json')
 def manifest():
-    try:
-        # Busca o arquivo na pasta 'static', mas serve na URL raiz
-        return send_from_directory(os.path.join(BASE_DIR, 'static'), 'manifest.json', mimetype='application/json')
-    except Exception as e:
-        return f"Erro ao carregar manifest.json: {e}", 500
+    try: return send_from_directory(os.path.join(BASE_DIR, 'static'), 'manifest.json', mimetype='application/json')
+    except Exception as e: return f"Erro: {e}", 500
 
-# 3️⃣ Rota do Service Worker
 @app.route('/sw.js')
 def service_worker():
-    try:
-        # Busca o arquivo na pasta 'static', mas serve na URL raiz (obrigatório para PWA)
-        return send_from_directory(os.path.join(BASE_DIR, 'static'), 'sw.js', mimetype='application/javascript')
-    except Exception as e:
-        return f"Erro ao carregar sw.js: {e}", 500
+    try: return send_from_directory(os.path.join(BASE_DIR, 'static'), 'sw.js', mimetype='application/javascript')
+    except Exception as e: return f"Erro: {e}", 500
 
-# 4️⃣ Rota Genérica para Imagens e Outros Estáticos
 @app.route('/static/<path:filename>')
 def serve_static_files(filename):
     return send_from_directory(os.path.join(BASE_DIR, 'static'), filename)
-
 
 def get_my_ip():
     try:
@@ -653,25 +649,41 @@ def auto_sync_checker(blockchain_instance):
         except Exception as e: print(f"[SYNC] Erro: {e}")
         time.sleep(60)
 
-# --- EXECUÇÃO PRINCIPAL LINUX ---
+# --- EXECUÇÃO PRINCIPAL ---
 if __name__ == "__main__":
-    # Configuração Inicial
     conn = sqlite3.connect(DATABASE, check_same_thread=False)
     node_id_val = str(uuid4()).replace("-", "")[:16]
     blockchain = Blockchain(conn, node_id_val)
 
-    # Definição de Porta
-    port = int(os.environ.get('PORT', 5001))
+    port = int(os.environ.get('PORT', 8001))
     meu_ip = get_my_ip()
     meu_url = f"http://{meu_ip}:{port}"
     print(f"[LINUX SEED] 🐧 Rodando em: {meu_url}")
 
-    # Conectar aos Seeds Originais
-    for seed in SEED_NODES: known_nodes.add(seed)
-    blockchain.resolve_conflicts()
+    # --- INICIALIZAÇÃO AGRESSIVA ---
+    print("[BOOT] 📡 Carregando Seeds e Peers...")
+    for seed in SEED_NODES: 
+        known_nodes.add(seed)
+    
+    salvar_peers(known_nodes) 
+    print(f"[SISTEMA] Arquivo peers.json criado/atualizado com {len(known_nodes)} nós.")
 
-    # Processo de Auto-Sync
+    print("[BOOT] ⏳ Iniciando Sync Inicial...")
+    if blockchain.resolve_conflicts():
+        print("[BOOT] ✅ Sync Concluído!")
+    else:
+        print("[BOOT] ⚠️ Sync terminou sem mudanças (ou chain local é a maior).")
+
     threading.Thread(target=auto_sync_checker, args=(blockchain,), daemon=True).start()
+    
+    kwargs = {'host': '0.0.0.0', 'port': 8001, 'threaded': True, 'use_reloader': False}
+    flask_thread = threading.Thread(target=app.run, kwargs=kwargs, daemon=True)
+    flask_thread.start()
 
-    # Iniciar Servidor (Sem GUI)
-    app.run(host='0.0.0.0', port=5001, threaded=True)
+    print("[SISTEMA] 🚀 Servidor ONLINE.")
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Desligando nó...")
