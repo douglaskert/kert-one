@@ -469,15 +469,24 @@ class Blockchain:
     def _mine_gpu(self, last_proof, difficulty):
         global mining_stop_flag, mining_result
 
-        print("[GPU] Inicializando contexto OpenCL no processo filho...")
+        print("[GPU] Inicializando contexto OpenCL seguro...")
 
         try:
-            # 🔥 Criar contexto dentro do processo (CORRETO)
-            ctx = cl.Context(dev_type=cl.device_type.GPU)
+            import pyopencl as cl
+            import numpy as np
+            import time
+
+            # 1. Configuração Robusta de Contexto
+            platforms = cl.get_platforms()
+            if not platforms: return -1
+            # Tenta pegar a primeira GPU disponível
+            device = platforms[0].get_devices(device_type=cl.device_type.GPU)[0]
+            
+            ctx = cl.Context(devices=[device])
             queue = cl.CommandQueue(ctx)
             prg = cl.Program(ctx, OPENCL_KERNEL).build()
 
-            # Buffers
+            # 2. Buffers
             result_nonce = np.zeros(1, dtype=np.uint32)
             found = np.zeros(1, dtype=np.int32)
             mf = cl.mem_flags
@@ -485,16 +494,24 @@ class Blockchain:
             res_buf = cl.Buffer(ctx, mf.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=found)
 
-            batch_size = 500000000  # ou mais, depende da GPU
+            # --- CORREÇÃO 1: Tamanho Seguro para GTX 1060 ---
+            # Reduzido de 500.000.000 para 500.000. 
+            # Menor carga por ciclo = Driver não trava.
+            batch_size = 500000  
+            loop_intern0 = 2000   # Tem que ser igual ao valor dentro do OPENCL_KERNEL
             current_nonce = 0
 
-            while not mining_stop_flag.is_set():
+            print(f"[GPU] Iniciando mineração em: {device.name}")
 
-                # Abort se bloco mudou
+            while not mining_stop_flag.is_set():
+                iter_start = time.time() # Cronômetro de segurança
+
+                # Abort se bloco mudou externamente
                 if self.last_block()['proof'] != last_proof:
                     return -1
 
                 # Executa kernel
+                # Nota: np.uint32() garante que o tipo de dado seja exato para o C
                 prg.search_block(
                     queue,
                     (batch_size,),
@@ -505,32 +522,45 @@ class Blockchain:
                     np.uint32(current_nonce)
                 )
 
-                cl.enqueue_copy(queue, found, found_buf)
+                # Espera a GPU terminar de verdade
                 queue.finish()
-    
+                
+                # --- CORREÇÃO 2: Watchdog Anti-Zumbi ---
+                # Se a GPU responder em 0.00s, o driver caiu. Reinicia o processo.
+                iter_duration = time.time() - iter_start
+                if iter_duration < 0.001: 
+                    print("[GPU WATCHDOG] ⚠️ Driver parou de responder. Reiniciando minerador...")
+                    return -1
+
+                cl.enqueue_copy(queue, found, found_buf)
+
                 if found[0] == 1:
                     cl.enqueue_copy(queue, result_nonce, res_buf)
                     nonce = int(result_nonce[0])
 
-                    # Double-check no Python
+                    # Validação Final
                     if self.valid_proof(last_proof, nonce, difficulty):
                         print(f"[GPU] 🚀 PROVA ENCONTRADA: {nonce}")
                         mining_result.value = nonce
                         mining_stop_flag.set()
                         return nonce
-
-                    # Falso positivo
+                    
+                    # Se foi alarme falso, reseta e continua
                     found[0] = 0
                     cl.enqueue_copy(queue, found_buf, found)
 
-                current_nonce += batch_size
-
-                # Throttle para ~80%
-                #time.sleep(0.002)
+                # --- CORREÇÃO 3: Incremento Matemático Correto ---
+                # O kernel calcula (batch * loop), então pulamos tudo isso
+                current_nonce += (batch_size * loop_intern0)
+                
+                # Proteção contra estouro de memória (reinicia o nonce se ficar gigante)
+                if current_nonce > 4000000000:
+                    current_nonce = 0
 
         except Exception as e:
-            print(f"[GPU ERROR] {e}. Fallback CPU.")
-            return self._mine_cpu_real(last_proof, difficulty)
+            print(f"[GPU ERROR] {e}. Tentando Fallback para CPU...")
+            # return self._mine_cpu_real(last_proof, difficulty) # Opcional
+            return -1
 
         return -1
     
@@ -1649,10 +1679,10 @@ def _continuous_mine():
 
     print("[MINER] Thread de mineração parada.")
     
-# --- Cliente Kert-One Core GUI (QMainWindow) ---
-# --- Cliente Kert-One Core GUI Corrigido ---
+# --- Cliente Kert-One Core GUI Corrigido (Versão Anti-Conflito v2) ---
 class KertOneCoreClient(QMainWindow):
-    start_mining_timer_signal = pyqtSignal()
+    # Sinal novo para substituir o Timer
+    start_mining_signal = pyqtSignal() 
     log_signal = pyqtSignal(str, str)
     chain_viewer_signal = pyqtSignal(str)
 
@@ -1663,24 +1693,22 @@ class KertOneCoreClient(QMainWindow):
         self.mining_active = False
         self.miner_address = None
         self.wallet_data = None
+        self.is_mining_busy = False # Trava interna vital
         self.apply_dark_theme()
         
-        # Conecta no Nó Local dinamicamente (Porta 5001)
+        # Conecta no Nó Local dinamicamente
         self.api_client = APIClient(f"http://127.0.0.1:5001") 
         self.setup_ui()
         self.load_wallet()
 
         self.chain_viewer_signal.connect(self.chain_viewer.setPlainText)
         self.log_signal.connect(self.update_log_viewer)
-        self.start_mining_timer_signal.connect(self.start_mining_timer_safe)
-
-        self.mining_timer = QTimer(self)
-        self.mining_timer.setInterval(6000)
-        self.mining_timer.timeout.connect(self.mine_block_via_api)
+        
+        # --- MUDANÇA CRÍTICA: Conecta o sinal de loop, não o timer ---
+        self.start_mining_signal.connect(self.mine_block_via_api)
 
         # 🟢 DINÂMICO: A GUI agora segue a URL global definida no boot
         self._on_flask_url_ready("http://127.0.0.1:5001")
-
 
     def update_log_viewer(self, message, message_type="info"):
         color_map = {"info": "#a0a0ff", "success": "#66ff66", "error": "#ff6666", "warning": "#ffff66"}
@@ -1688,12 +1716,93 @@ class KertOneCoreClient(QMainWindow):
         timestamp = datetime.now().strftime('%H:%M:%S')
         self.log_viewer.append(f'[{timestamp}] <font color="{color}">{message}</font>')
 
-    @pyqtSlot()
-    def start_mining_timer_safe(self):
-        if not self.mining_active:
-            self.mining_active = True
-            self.mining_timer.start()
-            self.log_signal.emit("Mineração iniciada com segurança.", "success")
+    # --- Lógica de Mineração Corrigida (Sem Timer) ---
+
+    def start_continuous_mining(self):
+        """Inicia o ciclo de mineração."""
+        if self.mining_active:
+            return
+    
+        addr = self.get_miner_address()
+        if not addr: return
+    
+        self.miner_address = addr
+        self.mining_active = True
+        self.is_mining_busy = False # Reseta a trava
+        
+        # Trava a interface
+        self.mine_single_btn.setEnabled(False)
+        self.start_mining_btn.setEnabled(False)
+        self.stop_mining_btn.setEnabled(True)
+        self.radio_cpu.setEnabled(False)
+        self.radio_gpu.setEnabled(False)
+        
+        self.status_bar.showMessage(f"Mineração contínua ativa para {self.miner_address}...", 0)
+        self.log_signal.emit("🚀 Mineração contínua iniciada (Modo Sequencial Inteligente).", "success")
+        
+        # 🔥 GATILHO INICIAL: Chama a primeira mineração
+        self.mine_block_via_api()
+
+    def stop_continuous_mining(self):
+        """Para a mineração."""
+        self.mining_active = False
+        
+        # Tenta avisar o servidor para parar imediatamente
+        try:
+            requests.post(f"{meu_url}/miner/stop", timeout=2)
+        except: pass
+
+        self.mine_single_btn.setEnabled(True)
+        self.start_mining_btn.setEnabled(True)
+        self.stop_mining_btn.setEnabled(False)
+        self.radio_cpu.setEnabled(True)
+        if HAS_GPU: self.radio_gpu.setEnabled(True)
+        
+        self.status_bar.showMessage("Mineração parada.", 5000)
+        self.log_signal.emit("Mineração parada pelo usuário.", "warning")
+
+    def mine_block_via_api(self):
+        """Função chamada pelo Loop. Só roda se estiver livre."""
+        if not self.mining_active: return
+        
+        # Se já estiver minerando, IGNORA este pedido (Evita o erro 409)
+        if self.is_mining_busy: return 
+        
+        self.is_mining_busy = True # 🔒 TRAVA
+        threading.Thread(target=self._mine_async, args=(self.miner_address,)).start()
+
+    def _mine_async(self, miner_address):
+        """Executa a mineração e chama o próximo ciclo AUTOMATICAMENTE."""
+        try:
+            # 1. Define endereço
+            requests.post(f"{meu_url}/miner/set_address", json={"address": miner_address}, timeout=5)
+
+            # 2. Manda minerar (Timeout None = espera a GPU terminar, seja 1s ou 10min)
+            response = requests.get(f"{meu_url}/mine", timeout=None)
+            
+            if response.status_code == 200:
+                data = response.json()
+                msg = data.get("message", "")
+                if "Minerado" in msg:
+                    self.log_signal.emit(f"💎 BLOCO ENCONTRADO! {msg}", "success")
+                    self.check_wallet_balance()
+            elif response.status_code == 409:
+                # Conflito leve, apenas ignora
+                pass
+
+        except Exception as e:
+            self.log_signal.emit(f"Ciclo finalizado/Erro: {e}", "info")
+            time.sleep(1) # Pausa de segurança se cair a rede
+
+        finally:
+            self.is_mining_busy = False # 🔓 DESTRAVA
+            
+            # SE AINDA ESTIVER ATIVO, CHAMA O PRÓXIMO
+            if self.mining_active:
+                time.sleep(0.5) # Respira
+                self.start_mining_signal.emit() # 🔁 REINICIA O CICLO
+
+    # --- Fim da Lógica de Mineração ---
 
     def apply_dark_theme(self):
         """Aplica um tema escuro (Dark Mode)."""
@@ -1758,12 +1867,8 @@ class KertOneCoreClient(QMainWindow):
         node_info_group = QGroupBox("Informações do Nó")
         node_info_layout = QFormLayout(node_info_group)
         
-        # --- CORREÇÃO AQUI ---
-        # Antes estava: "Aguardando..."
-        # Agora ele pega a variável global 'meu_url' e já mostra na tela
         self.node_id_label = QLabel(f"<span style='font-weight:bold;'>{node_id[:16]}...</span>")
         self.node_url_label = QLabel(f"<span style='font-weight:bold;'>{meu_url}</span>") 
-        # ---------------------
         
         node_info_layout.addRow("ID do Nó:", self.node_id_label)
         node_info_layout.addRow("URL do Nó:", self.node_url_label)
@@ -1780,25 +1885,6 @@ class KertOneCoreClient(QMainWindow):
         self.update_log_viewer(f"Servidor Flask pronto em: {meu_url}", "success")
         self.node_url_label.setText(f"<span style='font-weight:bold;'>{meu_url}</span>")
         self.status_bar.showMessage(f"Cliente Kert-One conectado ao nó: {meu_url}", 5000)
-
-        # self.update_ui_info()  <-- APAGUE ESTA LINHA OU COLOQUE O '#' NA FRENTE
-
-
-    def update_log_viewer(self, message, message_type="info"):
-        """Adiciona mensagens ao visualizador de log com cores."""
-        color_map = {
-            "info": "#a0a0ff",    
-            "success": "#66ff66", 
-            "error": "#ff6666",   
-            "warning": "#ffff66", 
-            "default": "#f0f0f0"  
-        }
-        color = color_map.get(message_type, color_map["default"])
-        
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        formatted_message = f"[{timestamp}] {message}"
-        
-        self.log_viewer.append(f'<font color="{color}">{formatted_message}</font>')
 
     # --- Aba Carteira (Opções 1 e 2 do CLI) ---
     
@@ -2033,7 +2119,6 @@ class KertOneCoreClient(QMainWindow):
         self.radio_gpu = QRadioButton("GPU (OpenCL Real)")
         
         # --- CORREÇÃO CRÍTICA: Conectar os sinais ANTES de marcar a caixa ---
-        # Isso garante que, ao definirmos setChecked(True) abaixo, o backend seja avisado imediatamente.
         self.radio_cpu.toggled.connect(lambda: self.update_mining_mode("CPU"))
         self.radio_gpu.toggled.connect(lambda: self.update_mining_mode("GPU"))
 
@@ -2041,7 +2126,6 @@ class KertOneCoreClient(QMainWindow):
         if HAS_GPU:
             self.radio_gpu.setEnabled(True)
             self.radio_gpu.setText("GPU (OpenCL Real - DETECTADA)")
-            # Agora sim: Ao marcar True, o sinal acima dispara e envia o POST para o servidor!
             self.radio_gpu.setChecked(True) 
         else:
             self.radio_cpu.setChecked(True)
@@ -2074,7 +2158,6 @@ class KertOneCoreClient(QMainWindow):
 
     def update_mining_mode(self, mode):
         """Envia requisição ao nó para alterar o modo de mineração."""
-        # Apenas processa quando o botão for ativado (toggled=True)
         sender = self.sender()
         if sender.isChecked():
             try:
@@ -2097,73 +2180,19 @@ class KertOneCoreClient(QMainWindow):
         miner_addr = self.get_miner_address()
         if miner_addr:
             self.log_signal.emit("Iniciando mineração de bloco único...", "info")
-            threading.Thread(target=self._mine_async, args=(miner_addr,)).start()
+            threading.Thread(target=self._mine_single_async, args=(miner_addr,)).start()
 
-    def start_continuous_mining(self):
-        if self.mining_active:
-            self.log_signal.emit("Mineração já está ativa.", "warning")
-            return
-    
-        addr = self.get_miner_address()
-        if not addr:
-            return
-    
-        self.miner_address = addr
-        self.mining_active = True
-        self.mine_single_btn.setEnabled(False)
-        self.start_mining_btn.setEnabled(False)
-        self.stop_mining_btn.setEnabled(True)
-        self.radio_cpu.setEnabled(False) # Bloqueia troca durante mineração
-        self.radio_gpu.setEnabled(False)
-        
-        self.status_bar.showMessage(f"Mineração contínua ativa para {self.miner_address}...", 0)
-        self.mining_timer.start(5000)  # 5 segundos
-        self.log_signal.emit("Mineração contínua iniciada.", "success")
-
-    def stop_continuous_mining(self):
-        if not self.mining_active:
-            return
-        self.mining_active = False
-        self.mining_timer.stop()
-        self.mine_single_btn.setEnabled(True)
-        self.start_mining_btn.setEnabled(True)
-        self.stop_mining_btn.setEnabled(False)
-        self.radio_cpu.setEnabled(True) # Desbloqueia troca
-        if HAS_GPU: self.radio_gpu.setEnabled(True)
-        
-        self.status_bar.showMessage("Mineração contínua parada.", 5000)
-        self.log_signal.emit("Mineração contínua parada.", "info")
-
-    def _mine_async(self, miner_address):
-        """Método que define o endereço do minerador e executa a mineração em thread separada."""
+    def _mine_single_async(self, miner_address):
+        """Função auxiliar para minerar 1 bloco (sem loop)."""
         try:
-            self.log_signal.emit(f"Definindo endereço do minerador no nó...", "info")
-            set_addr_response = requests.post(f"{meu_url}/miner/set_address", json={"address": miner_address}, timeout=10)
-            set_addr_response.raise_for_status()
+            requests.post(f"{meu_url}/miner/set_address", json={"address": miner_address}, timeout=5)
+            response = requests.get(f"{meu_url}/mine", timeout=None)
+            if response.status_code == 200:
+                self.log_signal.emit(f"✅ Bloco minerado: {response.json().get('message')}", "success")
+                self.check_wallet_balance()
+        except Exception as e:
+            self.log_signal.emit(f"Erro na mineração única: {e}", "error")
 
-            self.log_signal.emit(f"Endereço definido: {miner_address}. Iniciando mineração...", "info")
-
-            response = requests.get(f"{meu_url}/mine", timeout=30)
-            response.raise_for_status()
-
-            result = response.json()
-            self.log_signal.emit(f"✅ Bloco minerado com sucesso: {result.get('message', '')}", "success")
-            self.check_wallet_balance()
-
-        except requests.exceptions.RequestException as e:
-            self.log_signal.emit(f"Dificuldade alta: {e}. Minerando o próximo bloco...", "error")
-
-
-    def mine_block_via_api(self):
-        if not self.mining_active:
-            return
-    
-        if not self.miner_address:
-            self.log_signal.emit("Endereço do minerador não definido. Abortando mineração.", "error")
-            return
-
-        threading.Thread(target=self._mine_async, args=(self.miner_address,)).start()
-    
     # --- Aba Rede/Blockchain (Opções 5, 6, 7 e 10 do CLI) ---
 
     def setup_network_tab(self):
