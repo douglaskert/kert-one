@@ -655,7 +655,7 @@ if __name__ == "__main__":
     node_id_val = str(uuid4()).replace("-", "")[:16]
     blockchain = Blockchain(conn, node_id_val)
 
-    port = int(os.environ.get('PORT', 8001))
+    port = int(os.environ.get('PORT',5001))
     meu_ip = get_my_ip()
     meu_url = f"http://{meu_ip}:{port}"
     print(f"[LINUX SEED] 🐧 Rodando em: {meu_url}")
@@ -676,7 +676,7 @@ if __name__ == "__main__":
 
     threading.Thread(target=auto_sync_checker, args=(blockchain,), daemon=True).start()
     
-    kwargs = {'host': '0.0.0.0', 'port': 8001, 'threaded': True, 'use_reloader': False}
+    kwargs = {'host': '0.0.0.0', 'port': 5001, 'threaded': True, 'use_reloader': False}
     flask_thread = threading.Thread(target=app.run, kwargs=kwargs, daemon=True)
     flask_thread.start()
 
