@@ -34,12 +34,11 @@ try:
     HAS_GPU = True
     platforms = cl.get_platforms()
     if not platforms:
-        raise Exception("Nenhuma plataforma OpenCL encontrada (Instale drivers Nvidia)")
+        raise Exception("Nenhuma plataforma OpenCL encontrada")
     print(f"[SISTEMA] OpenCL Detectado: {platforms[0].name}")
 except Exception as e:
     HAS_GPU = False
-    print(f"\n[ERRO CRÍTICO GPU] Falha ao carregar OpenCL: {e}")
-    print("[SISTEMA] Ativando modo de segurança (CPU)...")
+    print(f"[SISTEMA] Modo GPU Indisponível ({e}). Usando CPU.")
 
 # --- Configurações ---
 DIFFICULTY = 4 
@@ -51,7 +50,7 @@ PEERS_FILE = 'peers.json'
 WALLET_FILE = "client_wallet.json"
 NGROK_AUTH_FILE = "ngrok_auth.txt" 
 
-# --- CHECKPOINT DE SEGURANÇA ---
+# --- CHECKPOINT DE SEGURANÇA (Evita rejeição de blocos antigos) ---
 LEGACY_CUTOFF_INDEX = 3330 
 
 # --- NÓS SEMENTES (SEED NODES) ---
@@ -290,7 +289,6 @@ class Blockchain:
             res_buf = cl.Buffer(ctx, cl.mem_flags.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR, hostbuf=found)
 
-            # --- Tamanho Seguro para Windows (500k) ---
             batch_size = 500000 
             loop_intern0 = 2000   
             current_nonce = 0
@@ -304,7 +302,6 @@ class Blockchain:
                 kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce))
                 queue.finish() 
                 
-                # --- Watchdog Anti-Zumbi ---
                 if (time.time() - iter_start) < 0.001:
                     print("[GPU WATCHDOG] ⚠️ Driver parou de responder. Reiniciando minerador...")
                     current_hashrate_global = 0.0
@@ -354,7 +351,6 @@ class Blockchain:
             
             if check_strict:
                 if curr['previous_hash'] != self.hash(prev): return False
-                # CHECKPOINT PARA VALIDAR BLOCOS ANTIGOS
                 if curr['index'] >= LEGACY_CUTOFF_INDEX:
                     if not self.valid_proof(prev['proof'], curr['proof'], curr.get('difficulty', DIFFICULTY)): return False
             else:
@@ -369,7 +365,6 @@ class Blockchain:
         new_chain = None
         max_difficulty = self.get_total_difficulty(self.chain)
         
-        # Se eu sou novo, ativo o modo CÓPIA CEGA
         is_fresh_install = (len(self.chain) <= 1)
         if is_fresh_install:
             print("[BOOT] 🐇 MODO CÓPIA CEGA ATIVADO (Windows): Baixando chain do Seed...")
@@ -594,6 +589,12 @@ def mine_api():
         return jsonify({"message": "Parado"}), 200
     finally:
         with miner_lock: mining_active = False
+
+def broadcast_block(block):
+    for peer in known_nodes | set(SEED_NODES):
+        if peer == meu_url: continue
+        try: requests.post(f"{peer}/blocks/receive", json=block, timeout=5)
+        except: pass
 
 # --- ROTAS SOLICITADAS ---
 @app.route('/dashboard')
@@ -917,6 +918,7 @@ class KertOneCoreClient(QMainWindow):
         except requests.exceptions.RequestException as e: self.log_signal.emit(f"Erro de conexão ao consultar contrato: {e}", "error")
 
     def change_ngrok_token(self):
+        """Abre o diálogo para mudar o token."""
         text, ok = QInputDialog.getText(self, "Configurar Ngrok", "Insira seu novo Ngrok Authtoken:\n(Reinicie o programa após salvar)", QLineEdit.Normal, load_ngrok_token() or "")
         if ok and text:
             save_ngrok_token(text)
