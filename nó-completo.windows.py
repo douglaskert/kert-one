@@ -50,7 +50,7 @@ PEERS_FILE = 'peers.json'
 WALLET_FILE = "client_wallet.json"
 NGROK_AUTH_FILE = "ngrok_auth.txt" 
 
-# --- CHECKPOINT DE SEGURANÇA (Evita rejeição de blocos antigos) ---
+# --- CHECKPOINT DE SEGURANÇA ---
 LEGACY_CUTOFF_INDEX = 3330 
 
 # --- NÓS SEMENTES (SEED NODES) ---
@@ -120,7 +120,6 @@ app = Flask(__name__)
 node_id = str(uuid4()).replace('-', '')
 CORS(app)
 
-# --- Variáveis Globais ---
 known_nodes = set()
 miner_lock = threading.Lock()
 blockchain = None
@@ -168,7 +167,8 @@ class Blockchain:
         self.node_id = node_id
         self._init_db()
         self.chain = self._load_chain()
-        self.current_transactions = []
+        self.current_transactions = self._load_mempool() # CARREGA PENDENTES AO INICIAR
+        
         if not self.chain:
             print("[BOOT] 📡 Inserindo Gênese Base 500.0...")
             genesis_block = {'index': 1, 'previous_hash': '1', 'proof': 100, 'timestamp': 1700000000.0, 'miner': 'genesis', 'transactions': [], 'difficulty': 1, 'protocol_value': 500.0}
@@ -197,6 +197,8 @@ class Blockchain:
         c = self.conn.cursor()
         c.execute('CREATE TABLE IF NOT EXISTS blocks(index_ INTEGER PRIMARY KEY, previous_hash TEXT, proof INTEGER, timestamp REAL, miner TEXT, difficulty INTEGER, protocol_value REAL)')
         c.execute('CREATE TABLE IF NOT EXISTS txs(id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, amount TEXT, fee TEXT, signature TEXT, block_index INTEGER, public_key TEXT)')
+        # --- NOVO: Tabela Mempool para persistência ---
+        c.execute('CREATE TABLE IF NOT EXISTS mempool(id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, amount TEXT, fee TEXT, signature TEXT, public_key TEXT, timestamp REAL)')
         self.conn.commit()
 
     def _load_chain(self):
@@ -211,15 +213,45 @@ class Blockchain:
             chain.append({'index': idx, 'previous_hash': prev, 'proof': proof, 'timestamp': ts, 'miner': miner, 'transactions': txs, 'difficulty': difficulty, 'protocol_value': p_val})
         return chain
 
+    def _load_mempool(self):
+        c = self.conn.cursor()
+        c.execute("SELECT id, sender, recipient, amount, fee, signature, public_key, timestamp FROM mempool")
+        txs = []
+        for r in c.fetchall():
+            txs.append({'id': r[0], 'sender': r[1], 'recipient': r[2], 'amount': r[3], 'fee': r[4], 'signature': r[5], 'public_key': r[6], 'timestamp': r[7]})
+        return txs
+
+    def _save_to_mempool(self, tx):
+        c = self.conn.cursor()
+        try:
+            c.execute("INSERT OR IGNORE INTO mempool VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                      (tx['id'], tx['sender'], tx['recipient'], tx['amount'], tx['fee'], tx['signature'], tx['public_key'], tx.get('timestamp', time.time())))
+            self.conn.commit()
+        except: pass
+
+    def _remove_from_mempool(self, tx_ids):
+        if not tx_ids: return
+        c = self.conn.cursor()
+        for tid in tx_ids:
+            c.execute("DELETE FROM mempool WHERE id=?", (tid,))
+        self.conn.commit()
+
     def new_block(self, proof, previous_hash, miner, initial_difficulty=None):
         block_index = len(self.chain) + 1
         reward = self._get_mining_reward(block_index)
         difficulty = self._calculate_difficulty_for_index(block_index) if initial_difficulty is None else initial_difficulty
         mining_reward_tx = {'id': str(uuid4()), 'sender': '0', 'recipient': miner, 'amount': f"{reward:.8f}", 'fee': f"{0.0:.8f}", 'signature': '', 'public_key': ''}
         if not (proof == 100 and previous_hash == '1'): self.current_transactions.insert(0, mining_reward_tx)
+        
         block = {'index': block_index, 'previous_hash': previous_hash, 'proof': proof, 'timestamp': time.time(), 'miner': miner, 'transactions': self.current_transactions, 'difficulty': difficulty}
+        
+        # Remove do mempool as transações que entraram no bloco
+        tx_ids_to_remove = [tx['id'] for tx in self.current_transactions if tx['sender'] != '0']
+        self._remove_from_mempool(tx_ids_to_remove)
+        
         self.current_transactions = []
         self.chain.append(block)
+        
         c = self.conn.cursor()
         c.execute("SELECT 1 FROM blocks WHERE index_=?", (block['index'],))
         if not c.fetchone(): self._save_block(block)
@@ -386,8 +418,6 @@ class Blockchain:
                             max_difficulty = peer_difficulty
                             new_chain = peer_chain
                             print(f"[CONSENSO] 📥 Nova chain encontrada em: {node_url}")
-                        else:
-                            print(f"[CONSENSO] Chain de {node_url} rejeitada (Inválida).")
             except: pass
             
         if new_chain:
@@ -410,13 +440,17 @@ class Blockchain:
 
     def balance(self, address):
         bal = 0.0
+        # 1. Soma saldo confirmado na blockchain
         for block in self.chain:
             for t in block['transactions']:
                 if t['sender'] == address: bal -= (float(t['amount']) + float(t['fee']))
                 if t['recipient'] == address: bal += float(t['amount'])
+        
+        # 2. Subtrai o que está no mempool (pendente de envio)
         for t in self.current_transactions:
             if t['sender'] == address: bal -= (float(t['amount']) + float(t['fee']))
-            if t['recipient'] == address: bal += float(t['amount'])
+            # Nota: Não somamos entrada pendente (recipient) por segurança, só saída
+            
         return bal
 
 # --- Funções de Carteira ---
@@ -505,9 +539,13 @@ def new_transaction_api():
         vk.verify_digest(bytes.fromhex(tx['signature']), hashlib.sha256(msg).digest())
         
         if blockchain.balance(tx['sender']) < (float(tx['amount']) + float(tx['fee'])): return jsonify({'message': 'Saldo insuficiente'}), 400
+        
+        # --- PERSISTÊNCIA: SALVA NO MEMPOOL ---
         blockchain.current_transactions.append(tx)
+        blockchain._save_to_mempool(tx) 
+        
         broadcast_tx_to_peers(tx)
-        return jsonify({'message': 'TX Adicionada'}), 201
+        return jsonify({'message': 'TX Adicionada e Salva'}), 201
     except Exception as e: return jsonify({'message': f'Erro: {e}'}), 400
 
 def broadcast_tx_to_peers(tx):
@@ -520,7 +558,12 @@ def broadcast_tx_to_peers(tx):
 def receive_transaction_api():
     tx = request.get_json()
     if not tx: return jsonify({"message": "No data"}), 400
-    blockchain.current_transactions.append(tx)
+    
+    # Salva também se receber de outro peer
+    if not blockchain.is_duplicate_transaction(tx):
+        blockchain.current_transactions.append(tx)
+        blockchain._save_to_mempool(tx)
+        
     return jsonify({"message": "OK"}), 200
 
 @app.route('/blocks/receive', methods=['POST'])
@@ -532,7 +575,12 @@ def receive_block_api():
         return jsonify({'message': 'Sync started'}), 202
     if blockchain.valid_proof(last['proof'], block['proof'], block['difficulty']):
         blockchain.chain.append(block); blockchain._save_block(block)
-        blockchain.current_transactions = [t for t in blockchain.current_transactions if t['id'] not in {x['id'] for x in block['transactions']}]
+        
+        # Limpa do mempool o que foi minerado
+        mined_ids = {t['id'] for t in block['transactions']}
+        blockchain.current_transactions = [t for t in blockchain.current_transactions if t['id'] not in mined_ids]
+        blockchain._remove_from_mempool(list(mined_ids))
+        
         return jsonify({'message': 'Bloco aceito'}), 200
     return jsonify({'message': 'Invalido'}), 400
 
