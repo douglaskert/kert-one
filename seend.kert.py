@@ -157,8 +157,8 @@ def coin_value_api():
     
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 10 
-    TARGET_TIME = 30
+    ADJUST_INTERVAL = 2016
+    TARGET_TIME = 600
 
     def _calculate_difficulty_for_index(self, target_block_index):
         if target_block_index % self.ADJUST_INTERVAL != 0:
@@ -420,7 +420,7 @@ class Blockchain:
             if node_url == meu_url: continue
             try:
                 print(f"   -> Conectando a {node_url}...")
-                response = requests.get(f"{node_url}/chain", timeout=60, verify=False)
+                response = requests.get(f"{node_url}/chain", timeout=5, verify=False)
                 if response.status_code == 200:
                     data = response.json()
                     peer_chain = data.get("chain")
