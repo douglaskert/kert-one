@@ -60,13 +60,21 @@ SEED_NODES = [
 ]
 
 # --- Configurações de Intensidade da GPU ---
+# AJUSTADO PARA EVITAR CRASH DO DRIVER (TDR)
 INTENSITY_CONFIG = {
     "LOW": {"batch": 500000, "loops": 1000},      # Uso leve
     "MEDIUM": {"batch": 1000000, "loops": 5000},  # Uso normal
     "HIGH": {"batch": 2000000, "loops": 10000},   # Uso intenso
-    "INSANE": {"batch": 5000000, "loops": 20000}  # MÁXIMO (Requer refrigeração)
+    "INSANE": {"batch": 1000000, "loops": 10}
 }
 mining_intensity_global = "MEDIUM" 
+
+# --- CORREÇÃO CRÍTICA: CABEÇALHO PARA NGROK ---
+# Isso impede o erro 403 Forbidden
+NGROK_HEADERS = {
+    "ngrok-skip-browser-warning": "true",
+    "User-Agent": "KertOne-Miner/3.0"
+}
 
 # Kernel Otimizado
 OPENCL_KERNEL = """
@@ -156,8 +164,8 @@ known_nodes = set(carregar_peers())
 
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 10
-    TARGET_TIME = 30
+    ADJUST_INTERVAL = 2016
+    TARGET_TIME = 600
 
     def _calculate_difficulty_for_index(self, target_block_index):
         if target_block_index % self.ADJUST_INTERVAL != 0:
@@ -416,7 +424,8 @@ class Blockchain:
         for node_url in neighbors:
             if node_url == meu_url: continue
             try:
-                response = requests.get(f"{node_url}/chain", timeout=60)
+                # HEADER NGROK ADICIONADO AQUI
+                response = requests.get(f"{node_url}/chain", timeout=60, headers=NGROK_HEADERS)
                 if response.status_code == 200:
                     data = response.json()
                     peer_chain = data.get("chain")
@@ -426,15 +435,12 @@ class Blockchain:
                     
                     peer_difficulty = self.get_total_difficulty(peer_chain)
                     
-                    # LOGICA 1: Cadeia mais longa/difícil vence
                     if peer_difficulty > max_difficulty:
                         if self.valid_chain(peer_chain, check_strict=not is_fresh_install):
                             max_difficulty = peer_difficulty
                             new_chain = peer_chain
                             print(f"[CONSENSO] 📥 Nova chain encontrada em: {node_url}")
 
-                    # LOGICA 2: Sincronizar Mempool (Transações Pendentes)
-                    # Se estamos novos ou a chain do peer é boa, pegamos as TXs dele
                     if is_fresh_install or peer_difficulty >= max_difficulty:
                         count_new_tx = 0
                         for tx in peer_mempool:
@@ -531,7 +537,9 @@ def register_nodes_api():
     if new_node_url == meu_url: return jsonify({"message": "Self ignored"}), 200
     if new_node_url not in known_nodes:
         known_nodes.add(new_node_url); salvar_peers(known_nodes)
-        try: requests.post(f"{new_node_url}/nodes/register", json={"url": meu_url}, timeout=5)
+        try: 
+            # HEADER NGROK ADICIONADO AQUI
+            requests.post(f"{new_node_url}/nodes/register", json={"url": meu_url}, timeout=5, headers=NGROK_HEADERS)
         except: pass
     return jsonify({"message": "Registrado", "known_peers": list(known_nodes)}), 200
 
@@ -570,12 +578,13 @@ def new_transaction_api():
     except Exception as e: return jsonify({'message': f'Erro: {e}'}), 400
 
 def broadcast_tx_to_peers(tx):
-    # Propaga para seeds + nodes conhecidos
     all_targets = known_nodes | set(SEED_NODES)
     print(f"[REDE] 📡 Propagando transação para {len(all_targets)} nós.")
     for peer in all_targets:
         if peer == meu_url: continue
-        try: requests.post(f"{peer}/tx/receive", json=tx, timeout=3)
+        try: 
+            # HEADER NGROK ADICIONADO AQUI
+            requests.post(f"{peer}/tx/receive", json=tx, timeout=3, headers=NGROK_HEADERS)
         except: pass
 
 @app.route('/tx/receive', methods=['POST'])
@@ -670,7 +679,9 @@ def mine_api():
 def broadcast_block(block):
     for peer in known_nodes | set(SEED_NODES):
         if peer == meu_url: continue
-        try: requests.post(f"{peer}/blocks/receive", json=block, timeout=5)
+        try: 
+            # HEADER NGROK ADICIONADO AQUI
+            requests.post(f"{peer}/blocks/receive", json=block, timeout=5, headers=NGROK_HEADERS)
         except: pass
 
 @app.route('/dashboard')
@@ -732,7 +743,7 @@ class KertOneCoreClient(QMainWindow):
         self.chain_viewer_signal.connect(self.chain_viewer.setPlainText)
         self.log_signal.connect(self.update_log_viewer)
         self.start_mining_signal.connect(self.mine_block_via_api)
-        self._on_flask_url_ready("http://127.0.0.1:5001")
+        self._on_flask_url_ready(f"http://127.0.0.1:5001") # Força localhost
 
     def start_continuous_mining(self):
         if self.mining_active: return
@@ -752,7 +763,7 @@ class KertOneCoreClient(QMainWindow):
 
     def stop_continuous_mining(self):
         self.mining_active = False
-        try: requests.post(f"{meu_url}/miner/stop", timeout=2)
+        try: requests.post(f"{meu_url}/miner/stop", timeout=2, headers=NGROK_HEADERS)
         except: pass
         self.mine_single_btn.setEnabled(True)
         self.start_mining_btn.setEnabled(True)
@@ -770,8 +781,8 @@ class KertOneCoreClient(QMainWindow):
 
     def _mine_async(self, miner_address):
         try:
-            requests.post(f"{meu_url}/miner/set_address", json={"address": miner_address}, timeout=5)
-            response = requests.get(f"{meu_url}/mine", timeout=None)
+            requests.post(f"{meu_url}/miner/set_address", json={"address": miner_address}, timeout=5, headers=NGROK_HEADERS)
+            response = requests.get(f"{meu_url}/mine", timeout=None, headers=NGROK_HEADERS)
             if response.status_code == 200:
                 data = response.json()
                 if "Minerado" in data.get("message", ""):
@@ -858,7 +869,8 @@ class KertOneCoreClient(QMainWindow):
 
     def _fetch_balance_async(self, address):
         try:
-            response = requests.get(f"{meu_url}/balance/{address}", timeout=5); response.raise_for_status(); balance_data = response.json(); balance = balance_data.get('balance', 0)
+            # ADICIONADO HEADER
+            response = requests.get(f"{meu_url}/balance/{address}", timeout=5, headers=NGROK_HEADERS); response.raise_for_status(); balance_data = response.json(); balance = balance_data.get('balance', 0)
             self.balance_label.setText(f"{balance} {COIN_SYMBOL}"); self.log_signal.emit(f"Saldo atualizado: {balance} {COIN_SYMBOL}", "info")
         except requests.exceptions.RequestException as e:
             self.log_signal.emit(f"Erro ao conectar ao nó ({meu_url}) ou buscar saldo: {e}", "error"); self.balance_label.setText("Erro de Conexão")
@@ -891,7 +903,8 @@ class KertOneCoreClient(QMainWindow):
 
     def _send_transaction_async(self, tx_full_data):
         try:
-            response = requests.post(f"{meu_url}/tx/new", json=tx_full_data, timeout=10); response.raise_for_status()
+            # ADICIONADO HEADER
+            response = requests.post(f"{meu_url}/tx/new", json=tx_full_data, timeout=10, headers=NGROK_HEADERS); response.raise_for_status()
             if response.status_code in [200, 201]: self.log_signal.emit(f"Transação enviada com sucesso: {response.json().get('message')}", "success"); self._clear_transaction_fields(); self.check_wallet_balance() 
             else: self.log_signal.emit(f"Erro ao enviar transação: {response.json().get('error', response.text)}", "error")
         except requests.exceptions.RequestException as e: self.log_signal.emit(f"Taxa é obrigatória ou erro de conexão com o nó ({meu_url}) ao enviar transação: {e}", "error")
@@ -929,7 +942,7 @@ class KertOneCoreClient(QMainWindow):
     def update_mining_mode(self, mode):
         sender = self.sender()
         if sender.isChecked():
-            try: requests.post(f"{meu_url}/miner/set_mode", json={'mode': mode}); self.log_signal.emit(f"Modo de mineração alterado para: {mode}", "info")
+            try: requests.post(f"{meu_url}/miner/set_mode", json={'mode': mode}, headers=NGROK_HEADERS); self.log_signal.emit(f"Modo de mineração alterado para: {mode}", "info")
             except: self.log_signal.emit("Erro ao alterar modo de mineração.", "error")
             
     def update_intensity(self):
@@ -938,7 +951,7 @@ class KertOneCoreClient(QMainWindow):
 
     def _update_intensity_async(self, level):
         try:
-            requests.post(f"{meu_url}/miner/set_intensity", json={'level': level}, timeout=2)
+            requests.post(f"{meu_url}/miner/set_intensity", json={'level': level}, timeout=2, headers=NGROK_HEADERS)
             self.log_signal.emit(f"Poder da GPU ajustado para: {level}", "warning")
         except: self.log_signal.emit("Erro ao ajustar intensidade.", "error")
 
@@ -973,7 +986,8 @@ class KertOneCoreClient(QMainWindow):
 
     def _fetch_blockchain_async(self):
         try:
-            response = requests.get(f"{meu_url}/chain", timeout=10); response.raise_for_status(); chain_data = response.json()
+            # ADICIONADO HEADER
+            response = requests.get(f"{meu_url}/chain", timeout=10, headers=NGROK_HEADERS); response.raise_for_status(); chain_data = response.json()
             formatted_chain = json.dumps(chain_data, indent=2); self.chain_viewer_signal.emit(formatted_chain); self.log_signal.emit(f"Blockchain carregada. Comprimento: {len(chain_data['chain'])} blocos.", "success")
         except requests.exceptions.RequestException as e: self.log_signal.emit(f"Erro ao buscar blockchain: {e}", "error"); self.chain_viewer_signal.emit("Erro ao carregar a blockchain.")
 
@@ -983,7 +997,8 @@ class KertOneCoreClient(QMainWindow):
     def _sync_blockchain_async(self):
         while True:
             try:
-                self.log_signal.emit("Iniciando sincronização (consenso)...", "info"); response = requests.get(f"{meu_url}/nodes/resolve", timeout=30); response.raise_for_status(); data = response.json()
+                # ADICIONADO HEADER
+                self.log_signal.emit("Iniciando sincronização (consenso)...", "info"); response = requests.get(f"{meu_url}/nodes/resolve", timeout=30, headers=NGROK_HEADERS); response.raise_for_status(); data = response.json()
                 if data.get("message") == "Nossa cadeia foi substituída.": self.log_signal.emit("Blockchain sincronizada com sucesso. Cadeia atualizada para a mais longa.", "success"); self.view_blockchain()
                 else: self.log_signal.emit("Blockchain já sincronizada ou não houve alteração.", "info")
             except requests.exceptions.RequestException as e: self.log_signal.emit(f"Erro ao sincronizar com o nó: {e}", "error")
@@ -997,7 +1012,9 @@ class KertOneCoreClient(QMainWindow):
         try:
             parsed_url = urlparse(node_url); peer_ip = parsed_url.hostname; peer_port = parsed_url.port or 5000 
             if not peer_ip: self.log_signal.emit(f"URL do peer inválida: {node_url}", "error"); return
-            payload = {'ip': peer_ip, 'port': peer_port}; response = requests.post(f"{meu_url}/nodes/register", json=payload, timeout=10); response.raise_for_status()
+            payload = {'ip': peer_ip, 'port': peer_port}; 
+            # ADICIONADO HEADER
+            response = requests.post(f"{meu_url}/nodes/register", json=payload, timeout=10, headers=NGROK_HEADERS); response.raise_for_status()
             self.log_signal.emit(f"Peer '{node_url}' registrado com sucesso! Resposta: {response.json()}", "success")
         except requests.exceptions.RequestException as e: self.log_signal.emit(f"Erro ao registrar peer: {e}", "error")
 
@@ -1007,7 +1024,8 @@ class KertOneCoreClient(QMainWindow):
 
     def _consult_contract_async(self, contract_address):
         try:
-            response = requests.get(f"{meu_url}/contract/{contract_address}/transactions", timeout=10); response.raise_for_status(); contract_data = response.json(); formatted_data = json.dumps(contract_data, indent=2); self.log_signal.emit(f"Detalhes do Contrato ({contract_address}):\n{formatted_data}", "info")
+            # ADICIONADO HEADER
+            response = requests.get(f"{meu_url}/contract/{contract_address}/transactions", timeout=10, headers=NGROK_HEADERS); response.raise_for_status(); contract_data = response.json(); formatted_data = json.dumps(contract_data, indent=2); self.log_signal.emit(f"Detalhes do Contrato ({contract_address}):\n{formatted_data}", "info")
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404: self.log_signal.emit("Contrato não encontrado na blockchain.", "warning")
             else: self.log_signal.emit(f"Erro HTTP ao consultar contrato: {e}", "error")
