@@ -157,8 +157,8 @@ def coin_value_api():
     
 # --- Classe Blockchain ---
 class Blockchain:
-    ADJUST_INTERVAL = 2016
-    TARGET_TIME = 600
+    ADJUST_INTERVAL = 50
+    TARGET_TIME = 20
 
     def _calculate_difficulty_for_index(self, target_block_index):
         if target_block_index % self.ADJUST_INTERVAL != 0:
