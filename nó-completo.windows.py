@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QTextEdit,
                              QVBoxLayout, QWidget, QLabel, QLineEdit, QFormLayout, 
                              QGroupBox, QMessageBox, QHBoxLayout, QTabWidget, 
                              QStatusBar, QDialog, QDialogButtonBox, QPlainTextEdit, 
-                             QInputDialog, QRadioButton)
+                             QInputDialog, QRadioButton, QComboBox)
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QDoubleValidator, QValidator 
 import multiprocessing
 
@@ -59,6 +59,17 @@ SEED_NODES = [
     "http://seend3.kert-one.com:8001"
 ]
 
+# --- Configurações de Intensidade da GPU ---
+# Ajuste aqui os perfis de poder
+INTENSITY_CONFIG = {
+    "LOW": {"batch": 500000, "loops": 1000},      # Uso leve, PC utilizável
+    "MEDIUM": {"batch": 1000000, "loops": 5000},  # Uso normal
+    "HIGH": {"batch": 2000000, "loops": 10000},   # Uso intenso
+    "INSANE": {"batch": 5000000, "loops": 20000}  # MAXIMO: Trava mouse, ventoinha no talo
+}
+mining_intensity_global = "MEDIUM" # Padrão
+
+# Kernel Atualizado para Aceitar Loop Dinâmico
 OPENCL_KERNEL = """
 #define ROR(x, y) ((x >> y) | (x << (32 - y)))
 #define Ch(x, y, z) (z ^ (x & (y ^ z)))
@@ -96,12 +107,12 @@ void sha256_transform(unsigned int *state, const unsigned int *data) {
     state[4] += e; state[5] += f; state[6] += g; state[7] += h;
 }
 
-__kernel void search_block(__global unsigned int *result, __global int *found, const unsigned int difficulty, const unsigned int start_nonce) {
+__kernel void search_block(__global unsigned int *result, __global int *found, const unsigned int difficulty, const unsigned int start_nonce, const unsigned int loops) {
     unsigned int gid = get_global_id(0);
-    unsigned int loop_count = 2000;
-    for(unsigned int i=0; i < loop_count; i++) {
+    // Loop dinâmico controlado pela interface
+    for(unsigned int i=0; i < loops; i++) {
         if(*found != 0) return;
-        unsigned int nonce = start_nonce + (gid * loop_count) + i;
+        unsigned int nonce = start_nonce + (gid * loops) + i;
         unsigned int state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
         unsigned int data[16] = {0}; 
         data[0] = nonce;
@@ -197,7 +208,6 @@ class Blockchain:
         c = self.conn.cursor()
         c.execute('CREATE TABLE IF NOT EXISTS blocks(index_ INTEGER PRIMARY KEY, previous_hash TEXT, proof INTEGER, timestamp REAL, miner TEXT, difficulty INTEGER, protocol_value REAL)')
         c.execute('CREATE TABLE IF NOT EXISTS txs(id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, amount TEXT, fee TEXT, signature TEXT, block_index INTEGER, public_key TEXT)')
-        # --- NOVO: Tabela Mempool para persistência ---
         c.execute('CREATE TABLE IF NOT EXISTS mempool(id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, amount TEXT, fee TEXT, signature TEXT, public_key TEXT, timestamp REAL)')
         self.conn.commit()
 
@@ -245,7 +255,6 @@ class Blockchain:
         
         block = {'index': block_index, 'previous_hash': previous_hash, 'proof': proof, 'timestamp': time.time(), 'miner': miner, 'transactions': self.current_transactions, 'difficulty': difficulty}
         
-        # Remove do mempool as transações que entraram no bloco
         tx_ids_to_remove = [tx['id'] for tx in self.current_transactions if tx['sender'] != '0']
         self._remove_from_mempool(tx_ids_to_remove)
         
@@ -298,7 +307,7 @@ class Blockchain:
         
     @staticmethod
     def _mine_gpu(last_proof, difficulty, stop_event, result_value):
-        global current_hashrate_global
+        global current_hashrate_global, mining_intensity_global
         try:
             import pyopencl as cl
             import numpy as np
@@ -321,31 +330,38 @@ class Blockchain:
             res_buf = cl.Buffer(ctx, cl.mem_flags.WRITE_ONLY, result_nonce.nbytes)
             found_buf = cl.Buffer(ctx, cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR, hostbuf=found)
 
-            batch_size = 500000 
-            loop_intern0 = 2000   
+            # --- CARREGA CONFIGURAÇÃO DE INTENSIDADE ---
+            config = INTENSITY_CONFIG.get(mining_intensity_global, INTENSITY_CONFIG["MEDIUM"])
+            batch_size = config["batch"]
+            loop_intern0 = config["loops"]
+            
+            print(f"🔥 [GPU] ENGINE: {device.name} | MODO: {mining_intensity_global} | BATCH: {batch_size}")
+
             current_nonce = 0
             start_time = time.time()
             total_hashes = 0
 
-            print(f"🔥 [GPU] ENGINE KERT-ONE ATIVA: {device.name}")
-
             while not stop_event.is_set():
+                # Re-checa intensidade caso tenha mudado
+                config = INTENSITY_CONFIG.get(mining_intensity_global, INTENSITY_CONFIG["MEDIUM"])
+                batch_size = config["batch"]
+                loop_intern0 = config["loops"]
+
                 iter_start = time.time()
-                kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce))
+                # Passa loops como argumento para o kernel
+                kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce), np.uint32(loop_intern0))
                 queue.finish() 
                 
                 if (time.time() - iter_start) < 0.001:
-                    print("[GPU WATCHDOG] ⚠️ Driver parou de responder. Reiniciando minerador...")
-                    current_hashrate_global = 0.0
-                    return -1
-
+                    print("[GPU WATCHDOG] ⚠️ Driver rápido demais ou travou. Ajustando...")
+                    
                 cl.enqueue_copy(queue, found, found_buf)
                 total_hashes += (batch_size * loop_intern0)
                 
                 now = time.time()
                 if now - start_time >= 3.0:
                     current_hashrate_global = (total_hashes / (now - start_time)) / 1e6
-                    print(f"⚡ [GPU] Speed: {current_hashrate_global:.2f} MH/s")
+                    print(f"⚡ [GPU] Speed: {current_hashrate_global:.2f} MH/s | Modo: {mining_intensity_global}")
                     start_time = now
                     total_hashes = 0
                 
@@ -449,7 +465,6 @@ class Blockchain:
         # 2. Subtrai o que está no mempool (pendente de envio)
         for t in self.current_transactions:
             if t['sender'] == address: bal -= (float(t['amount']) + float(t['fee']))
-            # Nota: Não somamos entrada pendente (recipient) por segurança, só saída
             
         return bal
 
@@ -540,7 +555,6 @@ def new_transaction_api():
         
         if blockchain.balance(tx['sender']) < (float(tx['amount']) + float(tx['fee'])): return jsonify({'message': 'Saldo insuficiente'}), 400
         
-        # --- PERSISTÊNCIA: SALVA NO MEMPOOL ---
         blockchain.current_transactions.append(tx)
         blockchain._save_to_mempool(tx) 
         
@@ -558,12 +572,9 @@ def broadcast_tx_to_peers(tx):
 def receive_transaction_api():
     tx = request.get_json()
     if not tx: return jsonify({"message": "No data"}), 400
-    
-    # Salva também se receber de outro peer
     if not blockchain.is_duplicate_transaction(tx):
         blockchain.current_transactions.append(tx)
         blockchain._save_to_mempool(tx)
-        
     return jsonify({"message": "OK"}), 200
 
 @app.route('/blocks/receive', methods=['POST'])
@@ -575,12 +586,9 @@ def receive_block_api():
         return jsonify({'message': 'Sync started'}), 202
     if blockchain.valid_proof(last['proof'], block['proof'], block['difficulty']):
         blockchain.chain.append(block); blockchain._save_block(block)
-        
-        # Limpa do mempool o que foi minerado
         mined_ids = {t['id'] for t in block['transactions']}
         blockchain.current_transactions = [t for t in blockchain.current_transactions if t['id'] not in mined_ids]
         blockchain._remove_from_mempool(list(mined_ids))
-        
         return jsonify({'message': 'Bloco aceito'}), 200
     return jsonify({'message': 'Invalido'}), 400
 
@@ -603,6 +611,18 @@ def set_miner_mode_api():
     if data.get('mode') == 'GPU' and HAS_GPU: blockchain.use_gpu = True
     else: blockchain.use_gpu = False
     return jsonify({"message": "OK"}), 200
+
+# --- NOVO ENDPOINT DE INTENSIDADE ---
+@app.route('/miner/set_intensity', methods=['POST'])
+def set_miner_intensity_api():
+    global mining_intensity_global
+    data = request.get_json()
+    level = data.get('level', 'MEDIUM')
+    if level in INTENSITY_CONFIG:
+        mining_intensity_global = level
+        print(f"[API] Intensidade ajustada para: {level}")
+        return jsonify({"message": f"Intensidade setada para {level}"}), 200
+    return jsonify({"message": "Nivel invalido"}), 400
 
 @app.route('/miner/stop', methods=['POST'])
 def stop_mining_api():
@@ -644,14 +664,11 @@ def broadcast_block(block):
         try: requests.post(f"{peer}/blocks/receive", json=block, timeout=5)
         except: pass
 
-# --- ROTAS SOLICITADAS ---
 @app.route('/dashboard')
-def dashboard_visual():
-    return render_template('dashboard.html')
+def dashboard_visual(): return render_template('dashboard.html')
 
 @app.route('/miner')
-def miner_web():
-    return render_template('miner.html')
+def miner_web(): return render_template('miner.html')
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
@@ -661,7 +678,7 @@ def get_stats():
         "index": last_block['index'],
         "difficulty": last_block.get('difficulty', 1),
         "status": "Mining" if mining_active else "Idle",
-        "gpu": "GTX 1060 100% Cuda" if HAS_GPU else "CPU Mode"
+        "gpu": f"GPU Mode ({mining_intensity_global})" if HAS_GPU else "CPU Mode"
     }), 200
 
 def get_my_ip():
@@ -681,12 +698,11 @@ def auto_sync_checker(blockchain_instance):
         except: pass
         time.sleep(60)
 
-# --- APIClient para a GUI ---
 class APIClient:
     def __init__(self, base_url): self.base_url = base_url
     def set_base_url(self, new_url): self.base_url = new_url
 
-# --- Cliente Kert-One Core GUI (Versão Final Sem Timer) ---
+# --- Cliente Kert-One Core GUI (Versão Final + Controle Intensidade) ---
 class KertOneCoreClient(QMainWindow):
     start_mining_signal = pyqtSignal() 
     log_signal = pyqtSignal(str, str)
@@ -778,7 +794,7 @@ class KertOneCoreClient(QMainWindow):
         dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(200, 200, 200))
         dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
         QApplication.instance().setPalette(dark_palette)
-        self.setStyleSheet("QWidget { background-color: rgb(45, 45, 45); color: rgb(200, 200, 200); } QPushButton { background-color: rgb(60, 60, 60); border: 1px solid rgb(80, 80, 80); padding: 8px; border-radius: 5px; } QPushButton:hover { background-color: rgb(80, 80, 80); } QPushButton:pressed { background-color: rgb(100, 100, 100); } QLineEdit, QTextEdit, QPlainTextEdit { background-color: rgb(30, 30, 30); border: 1px solid rgb(60, 60, 60); padding: 5px; border-radius: 3px; } QGroupBox { border: 1px solid rgb(80, 80, 80); margin-top: 10px; padding-top: 15px; } QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; color: rgb(150, 150, 255); } QTabWidget::pane { border: 1px solid rgb(60, 60, 60); } QTabBar::tab { background: rgb(55, 55, 55); border: 1px solid rgb(60, 60, 60); padding: 8px; border-bottom: none; } QTabBar::tab:selected { background: rgb(75, 75, 75); border-bottom: none; } #LogViewer { background-color: #202020; color: #f0f0f0; border: none; }")
+        self.setStyleSheet("QWidget { background-color: rgb(45, 45, 45); color: rgb(200, 200, 200); } QPushButton { background-color: rgb(60, 60, 60); border: 1px solid rgb(80, 80, 80); padding: 8px; border-radius: 5px; } QPushButton:hover { background-color: rgb(80, 80, 80); } QPushButton:pressed { background-color: rgb(100, 100, 100); } QLineEdit, QTextEdit, QPlainTextEdit, QComboBox { background-color: rgb(30, 30, 30); border: 1px solid rgb(60, 60, 60); padding: 5px; border-radius: 3px; } QGroupBox { border: 1px solid rgb(80, 80, 80); margin-top: 10px; padding-top: 15px; } QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; color: rgb(150, 150, 255); } QTabWidget::pane { border: 1px solid rgb(60, 60, 60); } QTabBar::tab { background: rgb(55, 55, 55); border: 1px solid rgb(60, 60, 60); padding: 8px; border-bottom: none; } QTabBar::tab:selected { background: rgb(75, 75, 75); border-bottom: none; } #LogViewer { background-color: #202020; color: #f0f0f0; border: none; }")
 
     def setup_ui(self):
         self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget)
@@ -883,6 +899,19 @@ class KertOneCoreClient(QMainWindow):
         if HAS_GPU: self.radio_gpu.setEnabled(True); self.radio_gpu.setText("GPU (OpenCL Real - DETECTADA)"); self.radio_gpu.setChecked(True) 
         else: self.radio_cpu.setChecked(True); self.radio_gpu.setEnabled(False); self.radio_gpu.setText("GPU (Drivers não encontrados)")
         hw_layout.addWidget(self.radio_cpu); hw_layout.addWidget(self.radio_gpu); layout.addWidget(hw_group)
+        
+        # --- SELETOR DE INTENSIDADE ---
+        intensity_group = QGroupBox("Nível de Poder da GPU"); intensity_layout = QHBoxLayout(intensity_group)
+        self.intensity_combo = QComboBox()
+        self.intensity_combo.addItem("Baixo (Silencioso)", "LOW")
+        self.intensity_combo.addItem("Médio (Equilibrado)", "MEDIUM")
+        self.intensity_combo.addItem("Alto (Forte)", "HIGH")
+        self.intensity_combo.addItem("INSANO (MAXIMO - FAZ BARULHO)", "INSANE")
+        self.intensity_combo.setCurrentIndex(1) # Padrão Médio
+        self.intensity_combo.currentIndexChanged.connect(self.update_intensity)
+        intensity_layout.addWidget(QLabel("Força de Mineração:")); intensity_layout.addWidget(self.intensity_combo)
+        layout.addWidget(intensity_group)
+
         mining_control_group = QGroupBox("Controle"); mining_control_layout = QHBoxLayout(mining_control_group)
         self.mine_single_btn = QPushButton("Minerar 1 Bloco"); self.start_mining_btn = QPushButton("Iniciar Mineração Contínua"); self.stop_mining_btn = QPushButton("Parar"); self.stop_mining_btn.setEnabled(False)
         self.mine_single_btn.clicked.connect(self.mine_single_block); self.start_mining_btn.clicked.connect(self.start_continuous_mining); self.stop_mining_btn.clicked.connect(self.stop_continuous_mining)
@@ -893,6 +922,16 @@ class KertOneCoreClient(QMainWindow):
         if sender.isChecked():
             try: requests.post(f"{meu_url}/miner/set_mode", json={'mode': mode}); self.log_signal.emit(f"Modo de mineração alterado para: {mode}", "info")
             except: self.log_signal.emit("Erro ao alterar modo de mineração.", "error")
+            
+    def update_intensity(self):
+        level = self.intensity_combo.currentData()
+        threading.Thread(target=self._update_intensity_async, args=(level,)).start()
+
+    def _update_intensity_async(self, level):
+        try:
+            requests.post(f"{meu_url}/miner/set_intensity", json={'level': level}, timeout=2)
+            self.log_signal.emit(f"Poder da GPU ajustado para: {level}", "warning")
+        except: self.log_signal.emit("Erro ao ajustar intensidade.", "error")
 
     def get_miner_address(self):
         addr = self.miner_addr_input.text().strip()
@@ -912,7 +951,7 @@ class KertOneCoreClient(QMainWindow):
         self.view_chain_btn.clicked.connect(self.view_blockchain); self.sync_chain_btn.clicked.connect(self.sync_blockchain)
         layout.addWidget(chain_group); network_options_group = QGroupBox("Opções de Rede"); network_options_layout = QHBoxLayout(network_options_group)
         self.register_peer_btn = QPushButton("Registrar Novo Peer"); self.consult_contract_btn = QPushButton("Consultar Contrato Inteligente")
-        self.change_token_btn = QPushButton("Ativar Nó Público (Ngrok)") # Botão Atualizado
+        self.change_token_btn = QPushButton("Ativar Nó Público (Ngrok)") 
         self.register_peer_btn.clicked.connect(self.register_peer_dialog); self.consult_contract_btn.clicked.connect(self.consult_contract_dialog); self.change_token_btn.clicked.connect(self.change_ngrok_token)
         network_options_layout.addWidget(self.register_peer_btn); network_options_layout.addWidget(self.consult_contract_btn); network_options_layout.addWidget(self.change_token_btn); layout.addWidget(network_options_group)
         self.open_urls_button = QPushButton("Abrir Portais"); self.open_urls_button.clicked.connect(self.abrir_portais); layout.addWidget(self.open_urls_button); layout.addStretch(1)
@@ -966,7 +1005,6 @@ class KertOneCoreClient(QMainWindow):
         except requests.exceptions.RequestException as e: self.log_signal.emit(f"Erro de conexão ao consultar contrato: {e}", "error")
 
     def change_ngrok_token(self):
-        """Abre o diálogo para mudar o token."""
         text, ok = QInputDialog.getText(self, "Configurar Ngrok", "Insira seu novo Ngrok Authtoken:\n(Reinicie o programa após salvar)", QLineEdit.Normal, load_ngrok_token() or "")
         if ok and text:
             save_ngrok_token(text)
@@ -979,13 +1017,9 @@ def run_server():
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
-    
-    # 1. Carrega token se existir (NÃO PEDE MAIS)
     token = load_ngrok_token()
-
     port = int(os.environ.get('PORT', 5001))
 
-    # 2. Inicia Ngrok (se tiver token salvo)
     try:
         from pyngrok import ngrok, conf
         if token:
