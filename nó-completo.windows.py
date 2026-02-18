@@ -60,16 +60,15 @@ SEED_NODES = [
 ]
 
 # --- Configurações de Intensidade da GPU ---
-# Ajuste aqui os perfis de poder
 INTENSITY_CONFIG = {
-    "LOW": {"batch": 500000, "loops": 1000},      # Uso leve, PC utilizável
+    "LOW": {"batch": 500000, "loops": 1000},      # Uso leve
     "MEDIUM": {"batch": 1000000, "loops": 5000},  # Uso normal
     "HIGH": {"batch": 2000000, "loops": 10000},   # Uso intenso
-    "INSANE": {"batch": 5000000, "loops": 20000}  # MAXIMO: Trava mouse, ventoinha no talo
+    "INSANE": {"batch": 5000000, "loops": 20000}  # MÁXIMO (Requer refrigeração)
 }
-mining_intensity_global = "MEDIUM" # Padrão
+mining_intensity_global = "MEDIUM" 
 
-# Kernel Atualizado para Aceitar Loop Dinâmico
+# Kernel Otimizado
 OPENCL_KERNEL = """
 #define ROR(x, y) ((x >> y) | (x << (32 - y)))
 #define Ch(x, y, z) (z ^ (x & (y ^ z)))
@@ -109,7 +108,6 @@ void sha256_transform(unsigned int *state, const unsigned int *data) {
 
 __kernel void search_block(__global unsigned int *result, __global int *found, const unsigned int difficulty, const unsigned int start_nonce, const unsigned int loops) {
     unsigned int gid = get_global_id(0);
-    // Loop dinâmico controlado pela interface
     for(unsigned int i=0; i < loops; i++) {
         if(*found != 0) return;
         unsigned int nonce = start_nonce + (gid * loops) + i;
@@ -178,7 +176,7 @@ class Blockchain:
         self.node_id = node_id
         self._init_db()
         self.chain = self._load_chain()
-        self.current_transactions = self._load_mempool() # CARREGA PENDENTES AO INICIAR
+        self.current_transactions = self._load_mempool()
         
         if not self.chain:
             print("[BOOT] 📡 Inserindo Gênese Base 500.0...")
@@ -342,13 +340,11 @@ class Blockchain:
             total_hashes = 0
 
             while not stop_event.is_set():
-                # Re-checa intensidade caso tenha mudado
                 config = INTENSITY_CONFIG.get(mining_intensity_global, INTENSITY_CONFIG["MEDIUM"])
                 batch_size = config["batch"]
                 loop_intern0 = config["loops"]
 
                 iter_start = time.time()
-                # Passa loops como argumento para o kernel
                 kernel(queue, (batch_size,), None, res_buf, found_buf, np.uint32(difficulty), np.uint32(current_nonce), np.uint32(loop_intern0))
                 queue.finish() 
                 
@@ -396,7 +392,6 @@ class Blockchain:
         for idx in range(1, len(chain)):
             prev = chain[idx - 1]
             curr = chain[idx]
-            
             if check_strict:
                 if curr['previous_hash'] != self.hash(prev): return False
                 if curr['index'] >= LEGACY_CUTOFF_INDEX:
@@ -415,7 +410,7 @@ class Blockchain:
         
         is_fresh_install = (len(self.chain) <= 1)
         if is_fresh_install:
-            print("[BOOT] 🐇 MODO CÓPIA CEGA ATIVADO (Windows): Baixando chain do Seed...")
+            print("[BOOT] 🐇 MODO CÓPIA CEGA: Baixando tudo (Blocos + Mempool) do Seed...")
 
         print(f"[CONSENSO] A verificar {len(neighbors)} vizinhos...")
         for node_url in neighbors:
@@ -425,21 +420,37 @@ class Blockchain:
                 if response.status_code == 200:
                     data = response.json()
                     peer_chain = data.get("chain")
+                    peer_mempool = data.get("pending_transactions", [])
+                    
                     if not peer_chain: continue
                     
                     peer_difficulty = self.get_total_difficulty(peer_chain)
                     
+                    # LOGICA 1: Cadeia mais longa/difícil vence
                     if peer_difficulty > max_difficulty:
                         if self.valid_chain(peer_chain, check_strict=not is_fresh_install):
                             max_difficulty = peer_difficulty
                             new_chain = peer_chain
                             print(f"[CONSENSO] 📥 Nova chain encontrada em: {node_url}")
+
+                    # LOGICA 2: Sincronizar Mempool (Transações Pendentes)
+                    # Se estamos novos ou a chain do peer é boa, pegamos as TXs dele
+                    if is_fresh_install or peer_difficulty >= max_difficulty:
+                        count_new_tx = 0
+                        for tx in peer_mempool:
+                            if not self.is_duplicate_transaction(tx) and not self.tx_already_mined(tx['id']):
+                                self.current_transactions.append(tx)
+                                self._save_to_mempool(tx)
+                                count_new_tx += 1
+                        if count_new_tx > 0:
+                            print(f"[MEMPOOL] 📥 Baixadas {count_new_tx} transações pendentes do Seed.")
+
             except: pass
             
         if new_chain:
             self.chain = new_chain
             self._rebuild_db_from_chain()
-            print(f"[CONSENSO] ✅ Sincronizado. Blocos: {len(self.chain)}")
+            print(f"[CONSENSO] ✅ Sincronizado Completamente. Blocos: {len(self.chain)}")
             return True
         return False
 
@@ -456,16 +467,12 @@ class Blockchain:
 
     def balance(self, address):
         bal = 0.0
-        # 1. Soma saldo confirmado na blockchain
         for block in self.chain:
             for t in block['transactions']:
                 if t['sender'] == address: bal -= (float(t['amount']) + float(t['fee']))
                 if t['recipient'] == address: bal += float(t['amount'])
-        
-        # 2. Subtrai o que está no mempool (pendente de envio)
         for t in self.current_transactions:
             if t['sender'] == address: bal -= (float(t['amount']) + float(t['fee']))
-            
         return bal
 
 # --- Funções de Carteira ---
@@ -563,7 +570,10 @@ def new_transaction_api():
     except Exception as e: return jsonify({'message': f'Erro: {e}'}), 400
 
 def broadcast_tx_to_peers(tx):
-    for peer in known_nodes.copy():
+    # Propaga para seeds + nodes conhecidos
+    all_targets = known_nodes | set(SEED_NODES)
+    print(f"[REDE] 📡 Propagando transação para {len(all_targets)} nós.")
+    for peer in all_targets:
         if peer == meu_url: continue
         try: requests.post(f"{peer}/tx/receive", json=tx, timeout=3)
         except: pass
@@ -612,7 +622,6 @@ def set_miner_mode_api():
     else: blockchain.use_gpu = False
     return jsonify({"message": "OK"}), 200
 
-# --- NOVO ENDPOINT DE INTENSIDADE ---
 @app.route('/miner/set_intensity', methods=['POST'])
 def set_miner_intensity_api():
     global mining_intensity_global
@@ -702,7 +711,7 @@ class APIClient:
     def __init__(self, base_url): self.base_url = base_url
     def set_base_url(self, new_url): self.base_url = new_url
 
-# --- Cliente Kert-One Core GUI (Versão Final + Controle Intensidade) ---
+# --- Cliente GUI ---
 class KertOneCoreClient(QMainWindow):
     start_mining_signal = pyqtSignal() 
     log_signal = pyqtSignal(str, str)
@@ -907,7 +916,7 @@ class KertOneCoreClient(QMainWindow):
         self.intensity_combo.addItem("Médio (Equilibrado)", "MEDIUM")
         self.intensity_combo.addItem("Alto (Forte)", "HIGH")
         self.intensity_combo.addItem("INSANO (MAXIMO - FAZ BARULHO)", "INSANE")
-        self.intensity_combo.setCurrentIndex(1) # Padrão Médio
+        self.intensity_combo.setCurrentIndex(1) 
         self.intensity_combo.currentIndexChanged.connect(self.update_intensity)
         intensity_layout.addWidget(QLabel("Força de Mineração:")); intensity_layout.addWidget(self.intensity_combo)
         layout.addWidget(intensity_group)
@@ -1047,10 +1056,19 @@ if __name__ == "__main__":
     for seed in SEED_NODES: known_nodes.add(seed)
     salvar_peers(known_nodes) 
     
-    if blockchain.resolve_conflicts(): 
-        print("[BOOT] ✅ Sincronizado com sucesso (Modo Checkpoint)!")
+    # --- NOVO: Sincronização Forçada e Profunda ---
+    print("[BOOT] 🔄 Iniciando Sincronização Profunda (Blocos + Mempool)...")
+    sync_success = False
+    for _ in range(3): # Tenta 3 vezes para garantir
+        if blockchain.resolve_conflicts():
+            sync_success = True
+            break
+        time.sleep(1)
+
+    if sync_success: 
+        print("[BOOT] ✅ Sincronizado com sucesso (Dados recuperados)!")
     else: 
-        print("[BOOT] ⚠️ Sync falhou ou chain local é a maior.")
+        print("[BOOT] ⚠️ Rodando com dados locais ou chain local é a mestre.")
 
     threading.Thread(target=auto_sync_checker, args=(blockchain,), daemon=True).start()
 
